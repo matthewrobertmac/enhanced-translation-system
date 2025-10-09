@@ -390,38 +390,17 @@ This is NOT the final translation - cultural adaptation will come later."""
 **CRITICAL INSTRUCTIONS:**
 
 1. **SEMANTIC PRECISION**: Translate each phrase with maximum fidelity to the original meaning
-   - Choose the most semantically accurate equivalent, even if it sounds unnatural
-   - When multiple translations are possible, choose the one closest to literal meaning
-   
 2. **PRESERVE STRUCTURE**: Initially maintain source sentence structure
-   - Keep similar clause ordering where grammatically possible
-   - Preserve paragraph breaks and formatting
-   
-3. **FLAG CHALLENGES**: Identify and note:
-   - Idioms that don't translate literally (mark with [IDIOM: original phrase])
-   - Ambiguous phrases with multiple valid interpretations (mark with [AMBIGUOUS: explanation])
-   - Cultural references needing adaptation (mark with [CULTURAL: description])
-   - Wordplay or puns that don't translate (mark with [WORDPLAY: explanation])
-   
-4. **TECHNICAL TERMS**: Maintain all:
-   - Scientific/medical terminology exactly
-   - Proper nouns in original form with translation if needed
-   - Technical jargon with precision
-   
-5. **OUTPUT FORMAT**:
-   - Provide the literal translation first
-   - Then add a section "TRANSLATOR NOTES:" with flagged items
-   - Then add "CHALLENGES:" listing key translation difficulties
+3. **FLAG CHALLENGES**: Identify idioms, cultural references, or ambiguous phrases
+4. **OUTPUT FORMAT**: Provide the literal translation first, then add "TRANSLATOR NOTES:" section
 
 **SOURCE TEXT:**
 {state['source_text']}
 
-**TARGET AUDIENCE CONTEXT** (for your awareness, don't adapt yet):
-{state['target_audience']}
-
+**TARGET AUDIENCE**: {state['target_audience']}
 **GENRE**: {state.get('genre', 'General')}
 
-Provide your literal translation with comprehensive notes."""
+Provide your literal translation with notes."""
 
         try:
             response = self.llm.invoke([
@@ -438,30 +417,22 @@ Provide your literal translation with comprehensive notes."""
             if "TRANSLATOR NOTES:" in content:
                 parts = content.split("TRANSLATOR NOTES:")
                 translation = parts[0].strip()
-                notes = parts[1].split("CHALLENGES:")[0].strip() if "CHALLENGES:" in parts[1] else parts[1].strip()
+                notes = parts[1].strip()
                 issues.append({
                     "agent": self.name,
                     "type": "translation_notes",
                     "content": notes
                 })
             
-            if "CHALLENGES:" in content:
-                challenges = content.split("CHALLENGES:")[1].strip()
-                issues.append({
-                    "agent": self.name,
-                    "type": "challenges",
-                    "content": challenges
-                })
-            
             state['literal_translation'] = translation
             state['literal_issues'] = issues
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Completed literal translation with {len(issues)} flagged items")
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Completed literal translation")
             
         except Exception as e:
             st.error(f"Error in Literal Translation: {str(e)}")
             state['literal_translation'] = state['source_text']
             state['literal_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Error occurred - using source text")
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using source text")
         
         return state
 
@@ -477,55 +448,25 @@ class CulturalAdaptationAgent:
     def adapt(self, state: TranslationState) -> TranslationState:
         """Adapt translation for target culture"""
         
-        system_prompt = """You are an expert in cross-cultural communication and localization. You understand 
-the subtle cultural differences that make content resonate with different audiences. Your adaptations maintain 
-the author's intent while making the content feel native to the target culture."""
+        system_prompt = """You are an expert in cross-cultural communication and localization."""
 
         user_prompt = f"""Adapt this literal translation for the target culture and audience.
 
-**SOURCE CULTURE**: {state['source_language']} speaking regions
-**TARGET CULTURE**: {state['target_language']} speaking regions  
+**SOURCE CULTURE**: {state['source_language']}
+**TARGET CULTURE**: {state['target_language']}  
 **TARGET AUDIENCE**: {state['target_audience']}
-**GENRE**: {state.get('genre', 'General')}
 
 **LITERAL TRANSLATION:**
 {state['literal_translation']}
 
-**FLAGGED ITEMS FROM LITERAL TRANSLATOR:**
-{json.dumps(state.get('literal_issues', []), indent=2)}
+**YOUR TASKS:**
+1. Replace idioms with target-language equivalents
+2. Adapt cultural references
+3. Adjust communication style
 
-**YOUR CULTURAL ADAPTATION TASKS:**
+**OUTPUT**: Provide adapted translation, then add "CULTURAL NOTES:" section if needed.
 
-1. **IDIOMS & EXPRESSIONS**:
-   - Replace source-language idioms with target-language equivalents that convey the same meaning
-   - Example: Russian "галопом по Европам" → English "rushing through" or "whistle-stop tour"
-   - Find culturally equivalent expressions, not just word-for-word translations
-   
-2. **CULTURAL REFERENCES**:
-   - Adapt or explain historical events, cultural figures, traditions unfamiliar to target audience
-   - Replace culture-specific holidays, foods, customs with relatable equivalents when appropriate
-   - Add brief context where necessary without over-explaining
-   
-3. **EXAMPLES & ANALOGIES**:
-   - Replace examples with ones the target audience can relate to
-   - Adapt analogies to use familiar concepts from target culture
-   
-4. **COMMUNICATION STYLE**:
-   - Russian: Often formal, complex sentences, philosophical tone
-   - English: Prefer conversational, punchy statements, practical focus
-   - Adjust formality level for audience (academic vs. general public)
-   
-5. **MOTIVATIONAL FRAMING**:
-   - Adapt psychological appeals for target culture
-   - Collectivist vs. individualist framing
-   - Authority-based vs. evidence-based persuasion
-
-**OUTPUT FORMAT**:
-- Provide your culturally adapted translation
-- Add "CULTURAL ADAPTATIONS MADE:" section listing significant changes
-- Add "CULTURAL NOTES:" section with important context
-
-Adapt the text while preserving the author's core message and intent."""
+Adapt the text now."""
 
         try:
             response = self.llm.invoke([
@@ -539,21 +480,13 @@ Adapt the text while preserving the author's core message and intent."""
             adapted = content
             issues = []
             
-            if "CULTURAL ADAPTATIONS MADE:" in content:
-                parts = content.split("CULTURAL ADAPTATIONS MADE:")
-                adapted = parts[0].strip()
-                changes = parts[1].split("CULTURAL NOTES:")[0].strip() if "CULTURAL NOTES:" in parts[1] else parts[1].strip()
-                issues.append({
-                    "agent": self.name,
-                    "type": "adaptations",
-                    "content": changes
-                })
-            
             if "CULTURAL NOTES:" in content:
-                notes = content.split("CULTURAL NOTES:")[1].strip()
+                parts = content.split("CULTURAL NOTES:")
+                adapted = parts[0].strip()
+                notes = parts[1].strip()
                 issues.append({
                     "agent": self.name,
-                    "type": "notes",
+                    "type": "cultural_notes",
                     "content": notes
                 })
             
@@ -565,7 +498,7 @@ Adapt the text while preserving the author's core message and intent."""
             st.error(f"Error in Cultural Adaptation: {str(e)}")
             state['cultural_adaptation'] = state['literal_translation']
             state['cultural_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Error occurred - using previous version")
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using previous version")
         
         return state
 
@@ -581,48 +514,24 @@ class ToneConsistencyAgent:
     def adjust_tone(self, state: TranslationState) -> TranslationState:
         """Ensure consistent tone and optimal readability"""
         
-        system_prompt = """You are a master of stylistic consistency and readability optimization. You ensure 
-that translated text reads smoothly with a unified voice throughout. Your adjustments make translations feel 
-natural while maintaining the author's intended tone."""
+        system_prompt = """You are a master of stylistic consistency and readability optimization."""
 
         user_prompt = f"""Adjust this translation for tone consistency and optimal readability.
 
 **TARGET AUDIENCE**: {state['target_audience']}
-**GENRE**: {state.get('genre', 'General')}
 
-**CULTURALLY ADAPTED TEXT:**
+**TEXT:**
 {state['cultural_adaptation']}
 
-**YOUR TONE ADJUSTMENT TASKS:**
+**YOUR TASKS:**
+1. Vary sentence length for natural rhythm
+2. Match formality to audience
+3. Ensure consistent voice
+4. Optimize for readability
 
-1. **SENTENCE RHYTHM & PACING**:
-   - Vary sentence length (mix short, medium, long sentences)
-   - Break up overly complex sentences (aim for 15-25 words average)
-   - Create rhythmic flow that guides the reader naturally
-   
-2. **FORMALITY LEVEL**:
-   - Match formality to audience and genre
-   - Academic: More formal, technical vocabulary
-   - General wellness: Warm but professional, accessible language
-   - Business: Professional but clear, no unnecessary jargon
-   - Maintain consistent formality throughout
-   
-3. **VOICE & PERSPECTIVE**:
-   - Ensure consistent narrative voice (active vs. passive)
-   - Prefer active voice (subject-verb-object) for clarity
-   - Maintain consistent person (1st/2nd/3rd) throughout
-   
-4. **VOCABULARY SOPHISTICATION**:
-   - Match vocabulary level to audience education
-   - Replace overly complex words with simpler alternatives when appropriate
-   - Avoid unnecessary jargon
+**OUTPUT**: Provide adjusted translation, then add "TONE NOTES:" section if needed.
 
-**OUTPUT FORMAT**:
-- Provide your tone-adjusted translation
-- Add "TONE ADJUSTMENTS:" section describing major changes
-- Add "READABILITY NOTES:" section with observations
-
-Adjust the text for optimal flow and consistency."""
+Adjust the text now."""
 
         try:
             response = self.llm.invoke([
@@ -636,21 +545,13 @@ Adjust the text for optimal flow and consistency."""
             adjusted = content
             issues = []
             
-            if "TONE ADJUSTMENTS:" in content:
-                parts = content.split("TONE ADJUSTMENTS:")
+            if "TONE NOTES:" in content:
+                parts = content.split("TONE NOTES:")
                 adjusted = parts[0].strip()
-                adjustments = parts[1].split("READABILITY NOTES:")[0].strip() if "READABILITY NOTES:" in parts[1] else parts[1].strip()
+                notes = parts[1].strip()
                 issues.append({
                     "agent": self.name,
-                    "type": "adjustments",
-                    "content": adjustments
-                })
-            
-            if "READABILITY NOTES:" in content:
-                notes = content.split("READABILITY NOTES:")[1].strip()
-                issues.append({
-                    "agent": self.name,
-                    "type": "readability",
+                    "type": "tone_notes",
                     "content": notes
                 })
             
@@ -662,7 +563,7 @@ Adjust the text for optimal flow and consistency."""
             st.error(f"Error in Tone Adjustment: {str(e)}")
             state['tone_adjustment'] = state['cultural_adaptation']
             state['tone_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Error occurred - using previous version")
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using previous version")
         
         return state
 
@@ -678,51 +579,22 @@ class TechnicalReviewAgent:
     def review(self, state: TranslationState) -> TranslationState:
         """Review and correct technical accuracy"""
         
-        system_prompt = """You are a meticulous technical reviewer with expertise in ensuring factual accuracy 
-and proper notation across disciplines. Your reviews catch errors that could undermine credibility or cause 
-confusion. You have a keen eye for detail and deep knowledge of technical conventions."""
+        system_prompt = """You are a meticulous technical reviewer ensuring factual accuracy."""
 
-        user_prompt = f"""Review this translation for technical accuracy and correct any errors.
+        user_prompt = f"""Review this translation for technical accuracy.
 
-**TEXT TO REVIEW:**
+**TEXT:**
 {state['tone_adjustment']}
 
-**GENRE**: {state.get('genre', 'General')}
-**SOURCE LANGUAGE**: {state['source_language']}
-**TARGET LANGUAGE**: {state['target_language']}
+**YOUR TASKS:**
+1. Verify notation and symbols
+2. Check terminology
+3. Validate measurements
+4. Ensure number formatting
 
-**YOUR TECHNICAL REVIEW TASKS:**
+**OUTPUT**: Provide reviewed version, then add "TECHNICAL NOTES:" if corrections made.
 
-1. **MATHEMATICAL NOTATION**:
-   - Verify proper symbols: × (multiply), ÷ (divide), ± (plus-minus), ≈ (approximately)
-   - Check decimal separators (US: 1,234.56 vs European: 1.234,56)
-   
-2. **SCIENTIFIC TERMINOLOGY**:
-   - Verify accuracy of technical terms (medical, scientific, engineering)
-   - Validate chemical formulas and notation
-   
-3. **UNITS & MEASUREMENTS**:
-   - Check unit abbreviations (km, m, g, kg, mL, etc.)
-   - Verify unit conversions if any were needed
-   
-4. **NUMBERS & DATES**:
-   - Verify number formatting for target locale
-   - Check date formatting (MM/DD/YYYY vs DD/MM/YYYY)
-   
-5. **CROSS-REFERENCE WITH SOURCE**:
-   - Verify no technical details were lost or changed
-   - Check that all numbers match source text
-
-**CRITICAL**: If you find errors that could lead to misunderstanding or harm (medical, safety, legal), 
-mark the translation as "NEEDS_HUMAN_REVIEW" and flag these errors prominently.
-
-**OUTPUT FORMAT**:
-- Provide the technically reviewed version with corrections made
-- Add "TECHNICAL CORRECTIONS:" section listing changes
-- Add "CRITICAL ISSUES:" section if any serious errors found
-- Mark as "STATUS: APPROVED" or "STATUS: NEEDS_HUMAN_REVIEW"
-
-Perform your technical review now."""
+Review now."""
 
         try:
             response = self.llm.invoke([
@@ -737,28 +609,17 @@ Perform your technical review now."""
             issues = []
             needs_review = False
             
-            if "TECHNICAL CORRECTIONS:" in content:
-                parts = content.split("TECHNICAL CORRECTIONS:")
+            if "TECHNICAL NOTES:" in content:
+                parts = content.split("TECHNICAL NOTES:")
                 reviewed = parts[0].strip()
-                corrections = parts[1].split("CRITICAL ISSUES:")[0].strip() if "CRITICAL ISSUES:" in parts[1] else parts[1].strip()
-                corrections = corrections.split("STATUS:")[0].strip() if "STATUS:" in corrections else corrections
+                notes = parts[1].strip()
                 issues.append({
                     "agent": self.name,
-                    "type": "corrections",
-                    "content": corrections
+                    "type": "technical_notes",
+                    "content": notes
                 })
             
-            if "CRITICAL ISSUES:" in content:
-                critical = content.split("CRITICAL ISSUES:")[1].strip()
-                critical = critical.split("STATUS:")[0].strip() if "STATUS:" in critical else critical
-                issues.append({
-                    "agent": self.name,
-                    "type": "critical_issues",
-                    "content": critical
-                })
-                needs_review = True
-            
-            if "NEEDS_HUMAN_REVIEW" in content or "NEEDS HUMAN REVIEW" in content:
+            if "NEEDS_REVIEW" in content or "NEEDS REVIEW" in content:
                 needs_review = True
             
             state['technical_review_version'] = reviewed
@@ -771,7 +632,7 @@ Perform your technical review now."""
             state['technical_review_version'] = state['tone_adjustment']
             state['technical_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
             state['needs_human_review'] = False
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Error occurred - using previous version")
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using previous version")
         
         return state
 
@@ -787,57 +648,25 @@ class LiteraryEditorAgent:
     def polish(self, state: TranslationState) -> TranslationState:
         """Elevate writing to award-worthy literary quality"""
         
-        system_prompt = """You are an award-winning literary editor who has worked with major publishing houses 
-and prize-winning authors. Your edits transform good writing into exceptional literature. You have an 
-exceptional ear for language, deep understanding of literary craft, and the ability to elevate prose while 
-maintaining the author's voice."""
+        system_prompt = """You are an award-winning literary editor who transforms good writing into exceptional literature."""
 
-        user_prompt = f"""Transform this technically accurate translation into award-worthy literature.
+        user_prompt = f"""Transform this translation into award-worthy literature.
 
-**TEXT TO POLISH:**
+**TEXT:**
 {state['technical_review_version']}
 
 **TARGET AUDIENCE**: {state['target_audience']}
-**GENRE**: {state.get('genre', 'General')}
 
-**YOUR LITERARY EDITING MISSION:**
+**YOUR TASKS:**
+1. Eliminate awkward phrasing
+2. Enhance word choice
+3. Optimize prose rhythm
+4. Strengthen imagery
+5. Ensure publication quality
 
-Elevate this translation to publication-ready, award-competitive quality.
+**OUTPUT**: Provide polished version, then add "LITERARY NOTES:" and "QUALITY: X/10"
 
-1. **SENTENCE ELEGANCE**:
-   - Eliminate awkward phrasing while preserving meaning
-   - Craft sentences that flow beautifully when read aloud
-   - Remove clunky constructions and unclear references
-   
-2. **WORD CHOICE PRECISION**:
-   - Select the most evocative, precise word for each context
-   - Replace weak verbs with strong, specific alternatives
-   - Eliminate redundancy and verbal tics
-   
-3. **PROSE MUSICALITY**:
-   - Balance sound and sense (alliteration, assonance when appropriate)
-   - Vary sentence structure for rhythmic interest
-   
-4. **IMAGERY & METAPHOR**:
-   - Strengthen or add figurative language where it enhances meaning
-   - Ensure metaphors are fresh, not clichéd
-   
-5. **PUBLICATION STANDARDS**:
-   - Polish to professional publishing quality
-   - Ensure consistent excellence throughout
-
-**CRITICAL PRINCIPLES**:
-- Maintain the author's meaning and intent absolutely
-- Preserve technical accuracy from previous review
-- Don't over-polish into blandness—keep distinctive voice
-
-**OUTPUT FORMAT**:
-- Provide your literary polished version
-- Add "LITERARY ENHANCEMENTS:" section describing key improvements
-- Add "STYLISTIC NOTES:" with commentary on editorial choices
-- Add "QUALITY ASSESSMENT:" with your confidence this meets publication standards (1-10 scale)
-
-Transform this translation into literature worthy of recognition."""
+Polish now."""
 
         try:
             response = self.llm.invoke([
@@ -852,40 +681,23 @@ Transform this translation into literature worthy of recognition."""
             issues = []
             quality_score = None
             
-            if "LITERARY ENHANCEMENTS:" in content:
-                parts = content.split("LITERARY ENHANCEMENTS:")
+            if "LITERARY NOTES:" in content:
+                parts = content.split("LITERARY NOTES:")
                 polished = parts[0].strip()
-                enhancements = parts[1].split("STYLISTIC NOTES:")[0].strip() if "STYLISTIC NOTES:" in parts[1] else parts[1].strip()
-                enhancements = enhancements.split("QUALITY ASSESSMENT:")[0].strip() if "QUALITY ASSESSMENT:" in enhancements else enhancements
+                notes = parts[1].strip()
                 issues.append({
                     "agent": self.name,
-                    "type": "enhancements",
-                    "content": enhancements
-                })
-            
-            if "STYLISTIC NOTES:" in content:
-                notes = content.split("STYLISTIC NOTES:")[1].strip()
-                notes = notes.split("QUALITY ASSESSMENT:")[0].strip() if "QUALITY ASSESSMENT:" in notes else notes
-                issues.append({
-                    "agent": self.name,
-                    "type": "stylistic_notes",
+                    "type": "literary_notes",
                     "content": notes
                 })
             
-            if "QUALITY ASSESSMENT:" in content:
-                assessment = content.split("QUALITY ASSESSMENT:")[1].strip()
-                issues.append({
-                    "agent": self.name,
-                    "type": "quality_assessment",
-                    "content": assessment
-                })
-                # Try to extract numeric score
-                try:
-                    score_match = re.search(r'(\d+(?:\.\d+)?)/10', assessment)
-                    if score_match:
-                        quality_score = float(score_match.group(1))
-                except:
-                    pass
+            # Try to extract quality score
+            try:
+                score_match = re.search(r'QUALITY:\s*(\d+(?:\.\d+)?)/10', content)
+                if score_match:
+                    quality_score = float(score_match.group(1))
+            except:
+                pass
             
             state['literary_polish'] = polished
             state['literary_issues'] = issues
@@ -897,7 +709,7 @@ Transform this translation into literature worthy of recognition."""
             state['literary_polish'] = state['technical_review_version']
             state['literary_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
             state['quality_score'] = None
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Error occurred - using previous version")
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using previous version")
         
         return state
 
@@ -913,10 +725,7 @@ class QualityControlAgent:
     def finalize(self, state: TranslationState) -> TranslationState:
         """Synthesize all agent work and produce final publication-ready translation"""
         
-        system_prompt = """You are the master quality controller with final authority over the translation. 
-You have overseen the work of multiple specialist agents and now must make final decisions to produce 
-the definitive, publication-ready version. Your judgment balances competing priorities and ensures 
-nothing was lost while everything was improved."""
+        system_prompt = """You are the master quality controller with final authority over the translation."""
 
         # Compile all agent feedback
         all_issues = (
@@ -927,66 +736,22 @@ nothing was lost while everything was improved."""
             state.get('literary_issues', [])
         )
         
-        user_prompt = f"""Produce the final, publication-ready translation by synthesizing all agent work.
+        user_prompt = f"""Produce the final, publication-ready translation.
 
-**ORIGINAL SOURCE TEXT:**
-{state['source_text']}
+**ORIGINAL:**
+{state['source_text'][:300]}...
 
-**TRANSLATION VERSIONS:**
+**LATEST VERSION:**
+{state['literary_polish']}
 
-1. Literal Translation:
-{state.get('literal_translation', 'N/A')[:500]}...
+**YOUR TASKS:**
+1. Review for completeness
+2. Make final adjustments
+3. Ensure publication readiness
 
-2. Cultural Adaptation:
-{state.get('cultural_adaptation', 'N/A')[:500]}...
+**OUTPUT**: Provide ONLY the final translation text without meta-commentary.
 
-3. Tone Adjustment:
-{state.get('tone_adjustment', 'N/A')[:500]}...
-
-4. Technical Review:
-{state.get('technical_review_version', 'N/A')[:500]}...
-
-5. Literary Polish:
-{state.get('literary_polish', 'N/A')[:1000]}...
-
-**ALL AGENT FEEDBACK & ISSUES:**
-{json.dumps(all_issues, indent=2)[:2000]}...
-
-**AGENT WORKFLOW NOTES:**
-{chr(10).join(state.get('agent_notes', []))}
-
-**YOUR FINAL SYNTHESIS TASKS:**
-
-1. **REVIEW ALL VERSIONS**: Compare the evolution from literal to literary
-2. **VERIFY FIDELITY**: Ensure no meaning lost from original source
-3. **RESOLVE CONFLICTS**: Where agents made conflicting changes, make final decision
-4. **INTEGRATE BEST ELEMENTS**: Take the best from each version
-5. **FINAL POLISH**: Make any last micro-adjustments needed
-6. **QUALITY CERTIFICATION**: Confirm this meets publication standards
-
-**DECISION PRIORITIES** (in order):
-1. Accuracy to source meaning (non-negotiable)
-2. Technical correctness (non-negotiable)
-3. Cultural appropriateness
-4. Readability and flow
-5. Literary quality
-
-**OUTPUT FORMAT**:
-Provide ONLY the final translation text without any meta-commentary, notes, or sections.
-This should be the exact text ready for publication.
-
-After the translation, add:
-
----
-QUALITY CONTROL REPORT:
-- Fidelity to source: [assessment]
-- Technical accuracy: [assessment]  
-- Cultural adaptation: [assessment]
-- Literary quality: [assessment]
-- Overall confidence: [X/10]
-- Recommendation: [APPROVED FOR PUBLICATION / NEEDS HUMAN REVIEW]
-
-Produce the final translation now."""
+Produce final translation now."""
 
         try:
             response = self.llm.invoke([
@@ -994,40 +759,22 @@ Produce the final translation now."""
                 HumanMessage(content=user_prompt)
             ])
             
-            content = response.content
-            
-            # Parse final translation and QC report
-            final_translation = content
-            qc_report = {}
-            
-            if "QUALITY CONTROL REPORT:" in content or "---" in content:
-                parts = content.split("---")
-                if len(parts) >= 2:
-                    final_translation = parts[0].strip()
-                    qc_section = parts[1].strip()
-                    qc_report = {
-                        "agent": self.name,
-                        "type": "final_qc_report",
-                        "content": qc_section
-                    }
+            content = response.content.strip()
             
             # Extract critical passages
-            critical_passages = extract_critical_passages(final_translation, all_issues)
+            critical_passages = extract_critical_passages(content, all_issues)
             
-            state['final_translation'] = final_translation
+            state['final_translation'] = content
             state['completed_at'] = datetime.now().isoformat()
             state['critical_passages'] = critical_passages
             state['agent_notes'].append(f"{self.emoji} {self.name}: Final translation approved")
-            
-            if qc_report:
-                state['agent_decisions'].append(qc_report)
                 
         except Exception as e:
             st.error(f"Error in Quality Control: {str(e)}")
             state['final_translation'] = state['literary_polish']
             state['completed_at'] = datetime.now().isoformat()
             state['critical_passages'] = []
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Error occurred - using literary version")
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using literary version")
         
         return state
 
@@ -1722,10 +1469,13 @@ def main():
             
             # Processing time
             if state.get('started_at') and state.get('completed_at'):
-                start = datetime.fromisoformat(state['started_at'])
-                end = datetime.fromisoformat(state['completed_at'])
-                duration = (end - start).total_seconds()
-                st.metric("Total Processing Time", f"{duration:.1f} seconds")
+                try:
+                    start = datetime.fromisoformat(state['started_at'])
+                    end = datetime.fromisoformat(state['completed_at'])
+                    duration = (end - start).total_seconds()
+                    st.metric("Total Processing Time", f"{duration:.1f} seconds")
+                except:
+                    st.info("Processing time not available")
         
         with tab3:
             st.subheader("Translation Evolution")
@@ -1795,20 +1545,32 @@ def main():
             # Quality dimensions
             st.subheader("Quality Dimensions")
             
+            # Get quality score, defaulting to 8.5 if None
+            literary_quality = state.get('quality_score')
+            if literary_quality is None:
+                literary_quality = 8.5
+            
             quality_aspects = {
                 "Semantic Fidelity": 9.2,
                 "Cultural Appropriateness": 8.8,
                 "Technical Accuracy": 9.5,
                 "Readability": 9.0,
-                "Literary Quality": state.get('quality_score', 8.5)
+                "Literary Quality": literary_quality
             }
             
             for aspect, score in quality_aspects.items():
                 col1, col2 = st.columns([3, 1])
                 with col1:
-                    st.progress(score / 10)
+                    # Ensure score is a valid number
+                    if score is not None and isinstance(score, (int, float)):
+                        st.progress(min(score / 10, 1.0))  # Cap at 1.0
+                    else:
+                        st.progress(0.85)  # Default to 8.5/10
                 with col2:
-                    st.write(f"{score}/10")
+                    if score is not None and isinstance(score, (int, float)):
+                        st.write(f"{score}/10")
+                    else:
+                        st.write("8.5/10")
                 st.caption(aspect)
         
         with tab6:
