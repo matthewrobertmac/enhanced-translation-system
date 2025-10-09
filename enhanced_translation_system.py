@@ -10,6 +10,7 @@ Features:
 - Comprehensive agent feedback system
 - File upload support (txt, docx, md)
 - Multiple export formats (txt, docx, md)
+- Critical passage flagging and review
 """
 
 import streamlit as st
@@ -22,6 +23,8 @@ from datetime import datetime
 import json
 import os
 import io
+import traceback
+import re
 
 # LangSmith integration (optional)
 try:
@@ -235,6 +238,9 @@ class TranslationState(TypedDict):
     technical_issues: List[Dict]
     literary_issues: List[Dict]
     
+    # Critical passages flagged for review
+    critical_passages: List[Dict]
+    
     # Workflow tracking
     agent_notes: Annotated[List[str], operator.add]
     agent_decisions: List[Dict]
@@ -331,6 +337,33 @@ def create_markdown_file(text: str, title: str = "Translation") -> str:
     return md_content
 
 
+def extract_critical_passages(text: str, issues_list: List[Dict]) -> List[Dict]:
+    """Extract critical passages that need review based on agent feedback"""
+    critical = []
+    
+    # Look for specific markers in issues
+    for issue in issues_list:
+        content = issue.get('content', '')
+        issue_type = issue.get('type', '')
+        agent = issue.get('agent', '')
+        
+        # Flag critical issues
+        if any(keyword in content.lower() for keyword in ['critical', 'warning', 'error', 'ambiguous', 'unclear', 'needs review']):
+            # Try to extract the relevant passage
+            sentences = text.split('.')
+            for i, sentence in enumerate(sentences):
+                if len(sentence.strip()) > 10:  # Skip very short sentences
+                    critical.append({
+                        'passage': sentence.strip() + '.',
+                        'issue': content[:200],  # First 200 chars of issue
+                        'agent': agent,
+                        'type': issue_type,
+                        'sentence_index': i
+                    })
+    
+    return critical[:10]  # Limit to top 10 critical passages
+
+
 # =====================
 # Enhanced Agent Definitions
 # =====================
@@ -390,38 +423,45 @@ This is NOT the final translation - cultural adaptation will come later."""
 
 Provide your literal translation with comprehensive notes."""
 
-        response = self.llm.invoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt)
-        ])
-        
-        content = response.content
-        
-        # Parse response
-        translation = content
-        issues = []
-        
-        if "TRANSLATOR NOTES:" in content:
-            parts = content.split("TRANSLATOR NOTES:")
-            translation = parts[0].strip()
-            notes = parts[1].split("CHALLENGES:")[0].strip() if "CHALLENGES:" in parts[1] else parts[1].strip()
-            issues.append({
-                "agent": self.name,
-                "type": "translation_notes",
-                "content": notes
-            })
-        
-        if "CHALLENGES:" in content:
-            challenges = content.split("CHALLENGES:")[1].strip()
-            issues.append({
-                "agent": self.name,
-                "type": "challenges",
-                "content": challenges
-            })
-        
-        state['literal_translation'] = translation
-        state['literal_issues'] = issues
-        state['agent_notes'].append(f"{self.emoji} {self.name}: Completed literal translation with {len(issues)} flagged items")
+        try:
+            response = self.llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ])
+            
+            content = response.content
+            
+            # Parse response
+            translation = content
+            issues = []
+            
+            if "TRANSLATOR NOTES:" in content:
+                parts = content.split("TRANSLATOR NOTES:")
+                translation = parts[0].strip()
+                notes = parts[1].split("CHALLENGES:")[0].strip() if "CHALLENGES:" in parts[1] else parts[1].strip()
+                issues.append({
+                    "agent": self.name,
+                    "type": "translation_notes",
+                    "content": notes
+                })
+            
+            if "CHALLENGES:" in content:
+                challenges = content.split("CHALLENGES:")[1].strip()
+                issues.append({
+                    "agent": self.name,
+                    "type": "challenges",
+                    "content": challenges
+                })
+            
+            state['literal_translation'] = translation
+            state['literal_issues'] = issues
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Completed literal translation with {len(issues)} flagged items")
+            
+        except Exception as e:
+            st.error(f"Error in Literal Translation: {str(e)}")
+            state['literal_translation'] = state['source_text']
+            state['literal_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Error occurred - using source text")
         
         return state
 
@@ -469,7 +509,6 @@ the author's intent while making the content feel native to the target culture."
 3. **EXAMPLES & ANALOGIES**:
    - Replace examples with ones the target audience can relate to
    - Adapt analogies to use familiar concepts from target culture
-   - Example: Russian "like a bear in a china shop" might need different animal in English
    
 4. **COMMUNICATION STYLE**:
    - Russian: Often formal, complex sentences, philosophical tone
@@ -480,11 +519,6 @@ the author's intent while making the content feel native to the target culture."
    - Adapt psychological appeals for target culture
    - Collectivist vs. individualist framing
    - Authority-based vs. evidence-based persuasion
-   
-6. **CULTURAL SENSITIVITY**:
-   - Remove or reframe anything that might be misunderstood in target culture
-   - Adjust gender references if cultural norms differ
-   - Consider target culture's taboos and sensitivities
 
 **OUTPUT FORMAT**:
 - Provide your culturally adapted translation
@@ -493,38 +527,45 @@ the author's intent while making the content feel native to the target culture."
 
 Adapt the text while preserving the author's core message and intent."""
 
-        response = self.llm.invoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt)
-        ])
-        
-        content = response.content
-        
-        # Parse response
-        adapted = content
-        issues = []
-        
-        if "CULTURAL ADAPTATIONS MADE:" in content:
-            parts = content.split("CULTURAL ADAPTATIONS MADE:")
-            adapted = parts[0].strip()
-            changes = parts[1].split("CULTURAL NOTES:")[0].strip() if "CULTURAL NOTES:" in parts[1] else parts[1].strip()
-            issues.append({
-                "agent": self.name,
-                "type": "adaptations",
-                "content": changes
-            })
-        
-        if "CULTURAL NOTES:" in content:
-            notes = content.split("CULTURAL NOTES:")[1].strip()
-            issues.append({
-                "agent": self.name,
-                "type": "notes",
-                "content": notes
-            })
-        
-        state['cultural_adaptation'] = adapted
-        state['cultural_issues'] = issues
-        state['agent_notes'].append(f"{self.emoji} {self.name}: Applied cultural localization")
+        try:
+            response = self.llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ])
+            
+            content = response.content
+            
+            # Parse response
+            adapted = content
+            issues = []
+            
+            if "CULTURAL ADAPTATIONS MADE:" in content:
+                parts = content.split("CULTURAL ADAPTATIONS MADE:")
+                adapted = parts[0].strip()
+                changes = parts[1].split("CULTURAL NOTES:")[0].strip() if "CULTURAL NOTES:" in parts[1] else parts[1].strip()
+                issues.append({
+                    "agent": self.name,
+                    "type": "adaptations",
+                    "content": changes
+                })
+            
+            if "CULTURAL NOTES:" in content:
+                notes = content.split("CULTURAL NOTES:")[1].strip()
+                issues.append({
+                    "agent": self.name,
+                    "type": "notes",
+                    "content": notes
+                })
+            
+            state['cultural_adaptation'] = adapted
+            state['cultural_issues'] = issues
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Applied cultural localization")
+            
+        except Exception as e:
+            st.error(f"Error in Cultural Adaptation: {str(e)}")
+            state['cultural_adaptation'] = state['literal_translation']
+            state['cultural_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Error occurred - using previous version")
         
         return state
 
@@ -558,7 +599,6 @@ natural while maintaining the author's intended tone."""
    - Vary sentence length (mix short, medium, long sentences)
    - Break up overly complex sentences (aim for 15-25 words average)
    - Create rhythmic flow that guides the reader naturally
-   - Use short sentences for emphasis, longer for explanation
    
 2. **FORMALITY LEVEL**:
    - Match formality to audience and genre
@@ -570,72 +610,59 @@ natural while maintaining the author's intended tone."""
 3. **VOICE & PERSPECTIVE**:
    - Ensure consistent narrative voice (active vs. passive)
    - Prefer active voice (subject-verb-object) for clarity
-   - Use passive voice only when appropriate (scientific contexts, deemphasizing actor)
    - Maintain consistent person (1st/2nd/3rd) throughout
    
 4. **VOCABULARY SOPHISTICATION**:
    - Match vocabulary level to audience education
    - Replace overly complex words with simpler alternatives when appropriate
-   - Explain technical terms on first use if needed
    - Avoid unnecessary jargon
-   
-5. **TRANSITIONS & FLOW**:
-   - Add or improve transitional phrases between ideas
-   - Ensure logical progression from sentence to sentence
-   - Create smooth paragraph connections
-   - Guide reader through complex arguments
-   
-6. **READABILITY OPTIMIZATION**:
-   - Target Flesch-Kincaid grade level appropriate for audience
-   - Break up dense paragraphs
-   - Use parallel structure for lists and comparisons
-   - Eliminate redundancy and wordiness
-
-7. **EMOTIONAL TONE**:
-   - Match emotional register to content and purpose
-   - Wellness: Warm, encouraging, supportive
-   - Academic: Objective, authoritative, measured
-   - Maintain consistent emotional tone throughout
 
 **OUTPUT FORMAT**:
 - Provide your tone-adjusted translation
 - Add "TONE ADJUSTMENTS:" section describing major changes
-- Add "READABILITY NOTES:" section with metrics or observations
+- Add "READABILITY NOTES:" section with observations
 
 Adjust the text for optimal flow and consistency."""
 
-        response = self.llm.invoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt)
-        ])
-        
-        content = response.content
-        
-        # Parse response
-        adjusted = content
-        issues = []
-        
-        if "TONE ADJUSTMENTS:" in content:
-            parts = content.split("TONE ADJUSTMENTS:")
-            adjusted = parts[0].strip()
-            adjustments = parts[1].split("READABILITY NOTES:")[0].strip() if "READABILITY NOTES:" in parts[1] else parts[1].strip()
-            issues.append({
-                "agent": self.name,
-                "type": "adjustments",
-                "content": adjustments
-            })
-        
-        if "READABILITY NOTES:" in content:
-            notes = content.split("READABILITY NOTES:")[1].strip()
-            issues.append({
-                "agent": self.name,
-                "type": "readability",
-                "content": notes
-            })
-        
-        state['tone_adjustment'] = adjusted
-        state['tone_issues'] = issues
-        state['agent_notes'].append(f"{self.emoji} {self.name}: Optimized tone and readability")
+        try:
+            response = self.llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ])
+            
+            content = response.content
+            
+            # Parse response
+            adjusted = content
+            issues = []
+            
+            if "TONE ADJUSTMENTS:" in content:
+                parts = content.split("TONE ADJUSTMENTS:")
+                adjusted = parts[0].strip()
+                adjustments = parts[1].split("READABILITY NOTES:")[0].strip() if "READABILITY NOTES:" in parts[1] else parts[1].strip()
+                issues.append({
+                    "agent": self.name,
+                    "type": "adjustments",
+                    "content": adjustments
+                })
+            
+            if "READABILITY NOTES:" in content:
+                notes = content.split("READABILITY NOTES:")[1].strip()
+                issues.append({
+                    "agent": self.name,
+                    "type": "readability",
+                    "content": notes
+                })
+            
+            state['tone_adjustment'] = adjusted
+            state['tone_issues'] = issues
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Optimized tone and readability")
+            
+        except Exception as e:
+            st.error(f"Error in Tone Adjustment: {str(e)}")
+            state['tone_adjustment'] = state['cultural_adaptation']
+            state['tone_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Error occurred - using previous version")
         
         return state
 
@@ -667,43 +694,24 @@ confusion. You have a keen eye for detail and deep knowledge of technical conven
 **YOUR TECHNICAL REVIEW TASKS:**
 
 1. **MATHEMATICAL NOTATION**:
-   - Verify proper symbols: × (multiply), ÷ (divide), ± (plus-minus), ≈ (approximately), √ (square root)
+   - Verify proper symbols: × (multiply), ÷ (divide), ± (plus-minus), ≈ (approximately)
    - Check decimal separators (US: 1,234.56 vs European: 1.234,56)
-   - Verify fraction formatting
-   - Ensure proper superscripts/subscripts
    
 2. **SCIENTIFIC TERMINOLOGY**:
    - Verify accuracy of technical terms (medical, scientific, engineering)
-   - Check species names (proper italicization, binomial nomenclature)
-   - Validate chemical formulas and notation (H₂O, CO₂, etc.)
-   - Ensure proper use of scientific units
+   - Validate chemical formulas and notation
    
 3. **UNITS & MEASUREMENTS**:
    - Check unit abbreviations (km, m, g, kg, mL, etc.)
    - Verify unit conversions if any were needed
-   - Ensure proper spacing between number and unit (5 kg, not 5kg)
-   - Check temperature scales (°C, °F, K)
    
 4. **NUMBERS & DATES**:
    - Verify number formatting for target locale
-   - Check date formatting (MM/DD/YYYY vs DD/MM/YYYY vs YYYY-MM-DD)
-   - Verify time formatting (12-hour vs 24-hour)
-   - Check currency symbols and placement ($100 vs 100$)
+   - Check date formatting (MM/DD/YYYY vs DD/MM/YYYY)
    
-5. **CITATIONS & REFERENCES**:
-   - Verify proper citation format if present
-   - Check reference numbering and consistency
-   - Ensure footnote/endnote formatting
-   
-6. **ACRONYMS & ABBREVIATIONS**:
-   - Verify first-use expansions (e.g., "DNA (deoxyribonucleic acid)")
-   - Check proper capitalization
-   - Ensure consistency throughout text
-   
-7. **CROSS-REFERENCE WITH SOURCE**:
+5. **CROSS-REFERENCE WITH SOURCE**:
    - Verify no technical details were lost or changed
    - Check that all numbers match source text
-   - Ensure specialized vocabulary is accurate
 
 **CRITICAL**: If you find errors that could lead to misunderstanding or harm (medical, safety, legal), 
 mark the translation as "NEEDS_HUMAN_REVIEW" and flag these errors prominently.
@@ -716,46 +724,54 @@ mark the translation as "NEEDS_HUMAN_REVIEW" and flag these errors prominently.
 
 Perform your technical review now."""
 
-        response = self.llm.invoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt)
-        ])
-        
-        content = response.content
-        
-        # Parse response
-        reviewed = content
-        issues = []
-        needs_review = False
-        
-        if "TECHNICAL CORRECTIONS:" in content:
-            parts = content.split("TECHNICAL CORRECTIONS:")
-            reviewed = parts[0].strip()
-            corrections = parts[1].split("CRITICAL ISSUES:")[0].strip() if "CRITICAL ISSUES:" in parts[1] else parts[1].strip()
-            corrections = corrections.split("STATUS:")[0].strip() if "STATUS:" in corrections else corrections
-            issues.append({
-                "agent": self.name,
-                "type": "corrections",
-                "content": corrections
-            })
-        
-        if "CRITICAL ISSUES:" in content:
-            critical = content.split("CRITICAL ISSUES:")[1].strip()
-            critical = critical.split("STATUS:")[0].strip() if "STATUS:" in critical else critical
-            issues.append({
-                "agent": self.name,
-                "type": "critical_issues",
-                "content": critical
-            })
-            needs_review = True
-        
-        if "NEEDS_HUMAN_REVIEW" in content or "NEEDS HUMAN REVIEW" in content:
-            needs_review = True
-        
-        state['technical_review_version'] = reviewed
-        state['technical_issues'] = issues
-        state['needs_human_review'] = needs_review
-        state['agent_notes'].append(f"{self.emoji} {self.name}: Technical review completed")
+        try:
+            response = self.llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ])
+            
+            content = response.content
+            
+            # Parse response
+            reviewed = content
+            issues = []
+            needs_review = False
+            
+            if "TECHNICAL CORRECTIONS:" in content:
+                parts = content.split("TECHNICAL CORRECTIONS:")
+                reviewed = parts[0].strip()
+                corrections = parts[1].split("CRITICAL ISSUES:")[0].strip() if "CRITICAL ISSUES:" in parts[1] else parts[1].strip()
+                corrections = corrections.split("STATUS:")[0].strip() if "STATUS:" in corrections else corrections
+                issues.append({
+                    "agent": self.name,
+                    "type": "corrections",
+                    "content": corrections
+                })
+            
+            if "CRITICAL ISSUES:" in content:
+                critical = content.split("CRITICAL ISSUES:")[1].strip()
+                critical = critical.split("STATUS:")[0].strip() if "STATUS:" in critical else critical
+                issues.append({
+                    "agent": self.name,
+                    "type": "critical_issues",
+                    "content": critical
+                })
+                needs_review = True
+            
+            if "NEEDS_HUMAN_REVIEW" in content or "NEEDS HUMAN REVIEW" in content:
+                needs_review = True
+            
+            state['technical_review_version'] = reviewed
+            state['technical_issues'] = issues
+            state['needs_human_review'] = needs_review
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Technical review completed")
+            
+        except Exception as e:
+            st.error(f"Error in Technical Review: {str(e)}")
+            state['technical_review_version'] = state['tone_adjustment']
+            state['technical_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
+            state['needs_human_review'] = False
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Error occurred - using previous version")
         
         return state
 
@@ -774,7 +790,7 @@ class LiteraryEditorAgent:
         system_prompt = """You are an award-winning literary editor who has worked with major publishing houses 
 and prize-winning authors. Your edits transform good writing into exceptional literature. You have an 
 exceptional ear for language, deep understanding of literary craft, and the ability to elevate prose while 
-maintaining the author's voice. Your work has helped books win literary awards."""
+maintaining the author's voice."""
 
         user_prompt = f"""Transform this technically accurate translation into award-worthy literature.
 
@@ -786,78 +802,34 @@ maintaining the author's voice. Your work has helped books win literary awards."
 
 **YOUR LITERARY EDITING MISSION:**
 
-Elevate this translation to publication-ready, award-competitive quality. This is the final stage before 
-publication—make it shine.
+Elevate this translation to publication-ready, award-competitive quality.
 
 1. **SENTENCE ELEGANCE**:
    - Eliminate awkward phrasing while preserving meaning
    - Craft sentences that flow beautifully when read aloud
    - Remove clunky constructions and unclear references
-   - Ensure each sentence has purpose and impact
-   - Create pleasing rhythm and cadence
    
 2. **WORD CHOICE PRECISION**:
    - Select the most evocative, precise word for each context
    - Replace weak verbs with strong, specific alternatives
    - Eliminate redundancy and verbal tics
-   - Choose words that create vivid imagery
-   - Prefer concrete, sensory language over abstract where appropriate
    
 3. **PROSE MUSICALITY**:
    - Balance sound and sense (alliteration, assonance when appropriate)
    - Vary sentence structure for rhythmic interest
-   - Create satisfying patterns and breaking them for emphasis
-   - Pay attention to how language sounds as well as what it means
    
 4. **IMAGERY & METAPHOR**:
    - Strengthen or add figurative language where it enhances meaning
    - Ensure metaphors are fresh, not clichéd
-   - Make descriptive passages more vivid and sensory
-   - Use concrete details to bring abstract concepts alive
    
-5. **OPENING & CLOSING POWER**:
-   - Craft compelling opening sentences that hook readers
-   - Create resonant closing sentences that satisfy
-   - Ensure first and last sentences of each paragraph carry weight
-   - Make transitions elegant and invisible
-   
-6. **NARRATIVE VOICE STRENGTH**:
-   - Amplify the distinctive authorial voice
-   - Ensure personality comes through clearly
-   - Build reader trust through confident, clear writing
-   - Match voice to genre and audience expectations
-   
-7. **READABILITY & ACCESSIBILITY**:
-   - Make complex ideas clear without dumbing down
-   - Remove unnecessary complexity while retaining sophistication
-   - Ensure vocabulary serves communication, not showing off
-   - Balance literary quality with accessibility
-   
-8. **LITERARY DEVICES** (use judiciously):
-   - Parallelism for emphasis and elegance
-   - Anaphora/epistrophe for rhetorical power
-   - Strategic repetition for effect
-   - Chiasmus for memorable phrasing
-   - Properly deployed, these elevate prose to art
-   
-9. **EMOTIONAL RESONANCE**:
-   - Ensure emotional beats land effectively
-   - Build appropriate tension and release
-   - Create moments of insight and revelation
-   - Connect intellectually AND emotionally with readers
-   
-10. **PUBLICATION STANDARDS**:
-    - Polish to professional publishing quality
-    - Eliminate any remaining rough edges
-    - Ensure consistent excellence throughout
-    - Make this translation indistinguishable from originally-written text
+5. **PUBLICATION STANDARDS**:
+   - Polish to professional publishing quality
+   - Ensure consistent excellence throughout
 
 **CRITICAL PRINCIPLES**:
 - Maintain the author's meaning and intent absolutely
 - Preserve technical accuracy from previous review
 - Don't over-polish into blandness—keep distinctive voice
-- Every change should make the writing BETTER, not just different
-- Ask: "Would this win a literary award?" If not, improve it.
 
 **OUTPUT FORMAT**:
 - Provide your literary polished version
@@ -867,58 +839,65 @@ publication—make it shine.
 
 Transform this translation into literature worthy of recognition."""
 
-        response = self.llm.invoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt)
-        ])
-        
-        content = response.content
-        
-        # Parse response
-        polished = content
-        issues = []
-        quality_score = None
-        
-        if "LITERARY ENHANCEMENTS:" in content:
-            parts = content.split("LITERARY ENHANCEMENTS:")
-            polished = parts[0].strip()
-            enhancements = parts[1].split("STYLISTIC NOTES:")[0].strip() if "STYLISTIC NOTES:" in parts[1] else parts[1].strip()
-            enhancements = enhancements.split("QUALITY ASSESSMENT:")[0].strip() if "QUALITY ASSESSMENT:" in enhancements else enhancements
-            issues.append({
-                "agent": self.name,
-                "type": "enhancements",
-                "content": enhancements
-            })
-        
-        if "STYLISTIC NOTES:" in content:
-            notes = content.split("STYLISTIC NOTES:")[1].strip()
-            notes = notes.split("QUALITY ASSESSMENT:")[0].strip() if "QUALITY ASSESSMENT:" in notes else notes
-            issues.append({
-                "agent": self.name,
-                "type": "stylistic_notes",
-                "content": notes
-            })
-        
-        if "QUALITY ASSESSMENT:" in content:
-            assessment = content.split("QUALITY ASSESSMENT:")[1].strip()
-            issues.append({
-                "agent": self.name,
-                "type": "quality_assessment",
-                "content": assessment
-            })
-            # Try to extract numeric score
-            try:
-                import re
-                score_match = re.search(r'(\d+(?:\.\d+)?)/10', assessment)
-                if score_match:
-                    quality_score = float(score_match.group(1))
-            except:
-                pass
-        
-        state['literary_polish'] = polished
-        state['literary_issues'] = issues
-        state['quality_score'] = quality_score
-        state['agent_notes'].append(f"{self.emoji} {self.name}: Literary polish completed")
+        try:
+            response = self.llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ])
+            
+            content = response.content
+            
+            # Parse response
+            polished = content
+            issues = []
+            quality_score = None
+            
+            if "LITERARY ENHANCEMENTS:" in content:
+                parts = content.split("LITERARY ENHANCEMENTS:")
+                polished = parts[0].strip()
+                enhancements = parts[1].split("STYLISTIC NOTES:")[0].strip() if "STYLISTIC NOTES:" in parts[1] else parts[1].strip()
+                enhancements = enhancements.split("QUALITY ASSESSMENT:")[0].strip() if "QUALITY ASSESSMENT:" in enhancements else enhancements
+                issues.append({
+                    "agent": self.name,
+                    "type": "enhancements",
+                    "content": enhancements
+                })
+            
+            if "STYLISTIC NOTES:" in content:
+                notes = content.split("STYLISTIC NOTES:")[1].strip()
+                notes = notes.split("QUALITY ASSESSMENT:")[0].strip() if "QUALITY ASSESSMENT:" in notes else notes
+                issues.append({
+                    "agent": self.name,
+                    "type": "stylistic_notes",
+                    "content": notes
+                })
+            
+            if "QUALITY ASSESSMENT:" in content:
+                assessment = content.split("QUALITY ASSESSMENT:")[1].strip()
+                issues.append({
+                    "agent": self.name,
+                    "type": "quality_assessment",
+                    "content": assessment
+                })
+                # Try to extract numeric score
+                try:
+                    score_match = re.search(r'(\d+(?:\.\d+)?)/10', assessment)
+                    if score_match:
+                        quality_score = float(score_match.group(1))
+                except:
+                    pass
+            
+            state['literary_polish'] = polished
+            state['literary_issues'] = issues
+            state['quality_score'] = quality_score
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Literary polish completed")
+            
+        except Exception as e:
+            st.error(f"Error in Literary Polish: {str(e)}")
+            state['literary_polish'] = state['technical_review_version']
+            state['literary_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
+            state['quality_score'] = None
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Error occurred - using previous version")
         
         return state
 
@@ -1009,34 +988,46 @@ QUALITY CONTROL REPORT:
 
 Produce the final translation now."""
 
-        response = self.llm.invoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt)
-        ])
-        
-        content = response.content
-        
-        # Parse final translation and QC report
-        final_translation = content
-        qc_report = {}
-        
-        if "QUALITY CONTROL REPORT:" in content or "---" in content:
-            parts = content.split("---")
-            if len(parts) >= 2:
-                final_translation = parts[0].strip()
-                qc_section = parts[1].strip()
-                qc_report = {
-                    "agent": self.name,
-                    "type": "final_qc_report",
-                    "content": qc_section
-                }
-        
-        state['final_translation'] = final_translation
-        state['completed_at'] = datetime.now().isoformat()
-        state['agent_notes'].append(f"{self.emoji} {self.name}: Final translation approved")
-        
-        if qc_report:
-            state['agent_decisions'].append(qc_report)
+        try:
+            response = self.llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ])
+            
+            content = response.content
+            
+            # Parse final translation and QC report
+            final_translation = content
+            qc_report = {}
+            
+            if "QUALITY CONTROL REPORT:" in content or "---" in content:
+                parts = content.split("---")
+                if len(parts) >= 2:
+                    final_translation = parts[0].strip()
+                    qc_section = parts[1].strip()
+                    qc_report = {
+                        "agent": self.name,
+                        "type": "final_qc_report",
+                        "content": qc_section
+                    }
+            
+            # Extract critical passages
+            critical_passages = extract_critical_passages(final_translation, all_issues)
+            
+            state['final_translation'] = final_translation
+            state['completed_at'] = datetime.now().isoformat()
+            state['critical_passages'] = critical_passages
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Final translation approved")
+            
+            if qc_report:
+                state['agent_decisions'].append(qc_report)
+                
+        except Exception as e:
+            st.error(f"Error in Quality Control: {str(e)}")
+            state['final_translation'] = state['literary_polish']
+            state['completed_at'] = datetime.now().isoformat()
+            state['critical_passages'] = []
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Error occurred - using literary version")
         
         return state
 
@@ -1059,7 +1050,8 @@ def initialize_llm(
         return ChatOpenAI(
             model=model,
             temperature=temperature,
-            api_key=api_key
+            api_key=api_key,
+            timeout=120
         )
     elif provider == "anthropic":
         if not ANTHROPIC_AVAILABLE:
@@ -1067,7 +1059,8 @@ def initialize_llm(
         return ChatAnthropic(
             model=model,
             temperature=temperature,
-            api_key=api_key
+            api_key=api_key,
+            timeout=120
         )
     else:
         raise ValueError(f"Unsupported provider: {provider}")
@@ -1148,7 +1141,7 @@ def build_translation_graph(llm: BaseChatModel) -> StateGraph:
         "technical_review",
         should_get_human_feedback,
         {
-            "human_review": END,  # Pause for human input
+            "human_review": END,
             "literary_polish": "literary_polish"
         }
     )
@@ -1187,6 +1180,13 @@ def main():
             text-align: center;
             color: #4CAF50;
         }
+        .critical-passage {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
         .stTabs [data-baseweb="tab-list"] {
             gap: 24px;
         }
@@ -1220,8 +1220,8 @@ def main():
                 type="password",
                 help="Required for translation"
             )
-            model_options = ["gpt-4o", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"]
-            default_model = "gpt-4o"
+            model_options = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"]
+            default_model = "gpt-4o-mini"
         else:  # anthropic
             api_key = st.text_input(
                 "Anthropic API Key",
@@ -1229,7 +1229,7 @@ def main():
                 help="Required for translation"
             )
             model_options = ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-opus-20240229"]
-            default_model = "claude-sonnet-4-20250514"
+            default_model = "claude-3-5-sonnet-20241022"
         
         # Optional LangSmith
         st.subheader("📊 Monitoring (Optional)")
@@ -1327,6 +1327,8 @@ def main():
         st.session_state.graph = None
     if 'history' not in st.session_state:
         st.session_state.history = []
+    if 'edited_translation' not in st.session_state:
+        st.session_state.edited_translation = None
     
     # Main content area
     st.header("📝 Translation Interface")
@@ -1408,6 +1410,7 @@ def main():
         with col_b:
             if st.button("🗑️ Clear", use_container_width=True):
                 st.session_state.translation_state = None
+                st.session_state.edited_translation = None
                 st.rerun()
         
         if not api_key:
@@ -1421,88 +1424,100 @@ def main():
         st.subheader("🎯 Translation Result")
         
         if translate_button and source_text:
-            with st.spinner("Initializing translation pipeline..."):
-                try:
-                    # Initialize LLM
-                    llm = initialize_llm(
-                        provider=provider,
-                        model=model,
-                        api_key=api_key,
-                        temperature=temperature
-                    )
-                    
-                    # Build graph
-                    graph = build_translation_graph(llm)
-                    st.session_state.graph = graph
-                    
-                    # Get current timestamp
-                    current_time = datetime.now().isoformat()
-                    
-                    # Initial state
-                    initial_state = {
-                        "source_text": source_text,
-                        "source_language": source_lang,
-                        "target_language": target_lang,
-                        "target_audience": audience,
-                        "genre": genre,
-                        "literal_translation": "",
-                        "cultural_adaptation": "",
-                        "tone_adjustment": "",
-                        "technical_review_version": "",
-                        "literary_polish": "",
-                        "final_translation": "",
-                        "literal_issues": [],
-                        "cultural_issues": [],
-                        "tone_issues": [],
-                        "technical_issues": [],
-                        "literary_issues": [],
-                        "agent_notes": [],
-                        "agent_decisions": [],
-                        "human_feedback": None,
-                        "revision_count": 0,
-                        "needs_human_review": False,
-                        "quality_score": None,
-                        "started_at": current_time,
-                        "completed_at": None
-                    }
-                    
-                    # Run workflow with status updates
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    stages = [
-                        ("🔤 Literal Translation", 0.17),
-                        ("🌍 Cultural Adaptation", 0.34),
-                        ("🎭 Tone Consistency", 0.51),
-                        ("🔬 Technical Review", 0.68),
-                        ("✍️ Literary Polish", 0.85),
-                        ("✅ Final Quality Control", 1.0)
-                    ]
-                    
-                    for stage_name, progress in stages:
-                        status_text.text(f"{stage_name}...")
-                        progress_bar.progress(progress)
-                    
-                    result = graph.invoke(initial_state)
-                    
-                    progress_bar.empty()
-                    status_text.empty()
-                    
-                    st.session_state.translation_state = result
-                    st.session_state.history.append({
-                        "timestamp": datetime.now().isoformat(),
-                        "source": source_text[:100] + "...",
-                        "target_lang": target_lang,
-                        "model": model,
-                        "result": result
-                    })
-                    
-                    st.success("✅ Translation pipeline completed!")
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"❌ Error during translation: {str(e)}")
-                    st.exception(e)
+            try:
+                # Create status container
+                status_container = st.empty()
+                progress_container = st.empty()
+                
+                with status_container.container():
+                    st.info("🔄 Initializing translation pipeline...")
+                
+                # Initialize LLM
+                llm = initialize_llm(
+                    provider=provider,
+                    model=model,
+                    api_key=api_key,
+                    temperature=temperature
+                )
+                
+                # Build graph
+                graph = build_translation_graph(llm)
+                st.session_state.graph = graph
+                
+                # Get current timestamp
+                current_time = datetime.now().isoformat()
+                
+                # Initial state
+                initial_state = {
+                    "source_text": source_text,
+                    "source_language": source_lang,
+                    "target_language": target_lang,
+                    "target_audience": audience,
+                    "genre": genre,
+                    "literal_translation": "",
+                    "cultural_adaptation": "",
+                    "tone_adjustment": "",
+                    "technical_review_version": "",
+                    "literary_polish": "",
+                    "final_translation": "",
+                    "literal_issues": [],
+                    "cultural_issues": [],
+                    "tone_issues": [],
+                    "technical_issues": [],
+                    "literary_issues": [],
+                    "critical_passages": [],
+                    "agent_notes": [],
+                    "agent_decisions": [],
+                    "human_feedback": None,
+                    "revision_count": 0,
+                    "needs_human_review": False,
+                    "quality_score": None,
+                    "started_at": current_time,
+                    "completed_at": None
+                }
+                
+                # Run workflow with status updates
+                stages = [
+                    ("🔤 Literal Translation", 0.17),
+                    ("🌍 Cultural Adaptation", 0.34),
+                    ("🎭 Tone Consistency", 0.51),
+                    ("🔬 Technical Review", 0.68),
+                    ("✍️ Literary Polish", 0.85),
+                    ("✅ Final Quality Control", 1.0)
+                ]
+                
+                for stage_name, progress_val in stages:
+                    with status_container.container():
+                        st.info(f"🔄 {stage_name}...")
+                    with progress_container.container():
+                        st.progress(progress_val)
+                
+                # Actually run the graph
+                with status_container.container():
+                    st.info("🔄 Running all agents...")
+                
+                result = graph.invoke(initial_state)
+                
+                # Clear status indicators
+                status_container.empty()
+                progress_container.empty()
+                
+                st.session_state.translation_state = result
+                st.session_state.edited_translation = result.get('final_translation', '')
+                st.session_state.history.append({
+                    "timestamp": datetime.now().isoformat(),
+                    "source": source_text[:100] + "...",
+                    "target_lang": target_lang,
+                    "model": model,
+                    "result": result
+                })
+                
+                st.success("✅ Translation pipeline completed!")
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"❌ Error during translation: {str(e)}")
+                st.code(traceback.format_exc())
         
         # Display results
         if st.session_state.translation_state:
@@ -1510,10 +1525,13 @@ def main():
             
             # Final Translation Display
             st.markdown("### 📖 Final Translation")
-            final_text = state.get('final_translation', 'No translation yet')
+            
+            # Use edited version if available, otherwise use original
+            display_text = st.session_state.edited_translation if st.session_state.edited_translation else state.get('final_translation', 'No translation yet')
+            
             st.text_area(
                 "Publication-Ready Text",
-                final_text,
+                display_text,
                 height=400,
                 key="final_display",
                 label_visibility="collapsed"
@@ -1531,6 +1549,8 @@ def main():
             # Export buttons with multiple formats
             st.markdown("### 📥 Download Options")
             col_x, col_y, col_z, col_w = st.columns(4)
+            
+            final_text = st.session_state.edited_translation if st.session_state.edited_translation else state.get('final_translation', '')
             
             with col_x:
                 # Plain text download
@@ -1590,7 +1610,8 @@ def main():
         
         state = st.session_state.translation_state
         
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+            "✏️ Edit & Review",
             "🔄 Agent Workflow",
             "📊 All Versions",
             "⚠️ Issues & Feedback",
@@ -1599,6 +1620,99 @@ def main():
         ])
         
         with tab1:
+            st.subheader("Edit & Review Translation")
+            st.markdown("Make edits to the final translation and review critical passages flagged by agents.")
+            
+            # Editable translation area
+            st.markdown("#### ✏️ Edit Translation")
+            edited_text = st.text_area(
+                "Edit the translation as needed:",
+                value=st.session_state.edited_translation if st.session_state.edited_translation else state.get('final_translation', ''),
+                height=300,
+                key="edit_translation_area",
+                help="Edit the translation directly. Changes will be saved automatically."
+            )
+            
+            # Update edited translation
+            if edited_text != st.session_state.edited_translation:
+                st.session_state.edited_translation = edited_text
+                st.success("✅ Edits saved")
+            
+            col_reset, col_apply = st.columns([1, 1])
+            with col_reset:
+                if st.button("↺ Reset to Original", use_container_width=True):
+                    st.session_state.edited_translation = state.get('final_translation', '')
+                    st.rerun()
+            
+            with col_apply:
+                if st.button("💾 Save Final Version", type="primary", use_container_width=True):
+                    state['final_translation'] = st.session_state.edited_translation
+                    st.success("✅ Final version saved!")
+            
+            st.divider()
+            
+            # Critical passages review
+            st.markdown("#### 🚩 Critical Passages for Review")
+            
+            critical_passages = state.get('critical_passages', [])
+            
+            if critical_passages:
+                st.info(f"Found {len(critical_passages)} passage(s) that may need attention")
+                
+                for idx, passage_info in enumerate(critical_passages, 1):
+                    with st.container():
+                        st.markdown(f"""
+                        <div class="critical-passage">
+                            <strong>Passage {idx}</strong> - Flagged by: {passage_info.get('agent', 'Unknown')}
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        st.markdown(f"**Text:** {passage_info.get('passage', 'N/A')}")
+                        st.markdown(f"**Issue:** {passage_info.get('issue', 'No details available')}")
+                        st.markdown(f"**Type:** `{passage_info.get('type', 'general')}`")
+                        
+                        # Option to edit this specific passage
+                        with st.expander(f"✏️ Edit Passage {idx}"):
+                            edited_passage = st.text_area(
+                                f"Edit passage {idx}:",
+                                value=passage_info.get('passage', ''),
+                                key=f"edit_passage_{idx}",
+                                height=100
+                            )
+                            if st.button(f"Apply Edit to Passage {idx}", key=f"apply_{idx}"):
+                                # Replace in the main edited translation
+                                old_passage = passage_info.get('passage', '')
+                                if old_passage in st.session_state.edited_translation:
+                                    st.session_state.edited_translation = st.session_state.edited_translation.replace(
+                                        old_passage, 
+                                        edited_passage
+                                    )
+                                    st.success(f"✅ Passage {idx} updated in translation")
+                                    st.rerun()
+                        
+                        st.divider()
+            else:
+                st.success("✅ No critical passages flagged - translation looks good!")
+            
+            # Additional review notes
+            st.markdown("#### 📝 Review Notes")
+            review_notes = st.text_area(
+                "Add your review notes here:",
+                placeholder="Enter any notes, comments, or feedback about this translation...",
+                height=150,
+                key="review_notes"
+            )
+            
+            if st.button("💾 Save Review Notes"):
+                if 'review_notes' not in state:
+                    state['review_notes'] = []
+                state['review_notes'].append({
+                    'timestamp': datetime.now().isoformat(),
+                    'notes': review_notes
+                })
+                st.success("✅ Review notes saved")
+        
+        with tab2:
             st.subheader("Agent Workflow Progress")
             
             for note in state.get('agent_notes', []):
@@ -1613,7 +1727,7 @@ def main():
                 duration = (end - start).total_seconds()
                 st.metric("Total Processing Time", f"{duration:.1f} seconds")
         
-        with tab2:
+        with tab3:
             st.subheader("Translation Evolution")
             
             versions = [
@@ -1629,7 +1743,7 @@ def main():
                 with st.expander(title, expanded=False):
                     st.text_area("", content, height=200, key=f"version_{title}", label_visibility="collapsed")
         
-        with tab3:
+        with tab4:
             st.subheader("Agent Feedback & Issues")
             
             all_issues = (
@@ -1660,7 +1774,7 @@ def main():
                 if st.button("Submit Feedback"):
                     st.info("Revision workflow would continue here with human feedback...")
         
-        with tab4:
+        with tab5:
             st.subheader("Translation Analytics")
             
             col_a, col_b, col_c = st.columns(3)
@@ -1697,7 +1811,7 @@ def main():
                     st.write(f"{score}/10")
                 st.caption(aspect)
         
-        with tab5:
+        with tab6:
             st.subheader("Translation History")
             
             if st.session_state.history:
@@ -1709,6 +1823,7 @@ def main():
                         
                         if st.button(f"Load this translation", key=f"load_{i}"):
                             st.session_state.translation_state = item['result']
+                            st.session_state.edited_translation = item['result'].get('final_translation', '')
                             st.rerun()
             else:
                 st.info("No translation history yet")

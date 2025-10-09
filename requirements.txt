@@ -1,0 +1,36 @@
+# Core web app
+streamlit>=1.38.0
+
+# LangChain ecosystem
+langchain-core>=0.3.0
+langchain>=0.3.0
+langgraph>=0.2.15
+langsmith>=0.1.64
+
+# Model integrations
+langchain-openai>=0.2.0
+langchain-anthropic>=0.1.15
+
+# NLP / parsing / analysis
+spacy>=3.7.2
+tiktoken>=0.7.0
+regex>=2023.12.25
+
+# Document handling
+python-docx>=1.1.0
+
+# Data / plotting
+pandas>=2.2.2
+plotly>=5.24.0
+numpy>=1.26.4
+scipy>=1.12.0
+
+# Utility & environment management
+python-dotenv>=1.0.1
+
+# Optional baseline translator for comparison
+deep-translator>=1.11.4
+
+# (optional, for text formatting / export)
+pypandoc>=1.13
+
