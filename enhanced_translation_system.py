@@ -13,6 +13,7 @@ Features:
 - Safe same-language (e.g., English→English) refinement mode
 - BERTScore for same-language runs
 - Visualizations: word counts, sentence-length histograms, readability, issue counts, BERTScore bars
+- Word clouds: Source, Final, and Difference (words added)
 """
 
 import streamlit as st
@@ -27,11 +28,19 @@ import os
 import io
 import traceback
 import re
+import collections
 
 # === New: viz imports ===
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+
+# === New: wordcloud (optional) ===
+try:
+    from wordcloud import WordCloud, STOPWORDS
+    WORDCLOUD_AVAILABLE = True
+except Exception:
+    WORDCLOUD_AVAILABLE = False
 
 # ===== Language Guardrail =====
 LANGUAGE_GUARDRAIL = (
@@ -343,6 +352,37 @@ def nonzero_bins(max_len: int) -> List[int]:
     step = 5
     upper = max(5, ((max_len + step - 1) // step) * step)
     return list(range(0, upper + step, step))
+
+# --- New: word frequency + wordcloud helpers ---
+_WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ']+")
+
+def tokenize_words(text: str) -> List[str]:
+    if not text:
+        return []
+    return [w.lower() for w in _WORD_RE.findall(text)]
+
+def word_frequencies(text: str, stopwords: Optional[set] = None) -> Dict[str, int]:
+    tokens = tokenize_words(text)
+    if stopwords is None:
+        stopwords = set()
+    cnt = collections.Counter(w for w in tokens if w not in stopwords and len(w) > 1)
+    return dict(cnt)
+
+def render_wordcloud_from_freq(freqs: Dict[str, int], title: str):
+    if not freqs:
+        st.info(f"No tokens to display for **{title}**.")
+        return
+    wc = WordCloud(
+        width=1000,
+        height=500,
+        background_color="white",
+        collocations=False
+    ).generate_from_frequencies(freqs)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.imshow(wc, interpolation="bilinear")
+    ax.axis("off")
+    ax.set_title(title)
+    st.pyplot(fig)
 
 
 # =====================
@@ -1238,6 +1278,49 @@ def main():
                             st.pyplot(fig2)
                         except Exception:
                             st.warning("Could not render final histogram.")
+
+                st.divider()
+
+                # ---------- New: Word Clouds (Source, Final, Added Words) ----------
+                with st.expander("Word Clouds (Before / After / Difference)", expanded=True):
+                    if not WORDCLOUD_AVAILABLE:
+                        st.info("Install `wordcloud` to enable this: `pip install wordcloud`")
+                    else:
+                        # Build stopword set: wordcloud's STOPWORDS plus a few common extras
+                        sw = set(STOPWORDS) | {"—", "–", "’", "”", "“", "…"}
+
+                        src_text = state.get('source_text', '')
+                        fin_text = state.get('final_translation', '')
+                        src_freq = word_frequencies(src_text, stopwords=sw)
+                        fin_freq = word_frequencies(fin_text, stopwords=sw)
+
+                        # Difference: positive deltas (words added or increased)
+                        diff_freq = {}
+                        for w, f_cnt in fin_freq.items():
+                            s_cnt = src_freq.get(w, 0)
+                            delta = f_cnt - s_cnt
+                            if delta > 0:
+                                diff_freq[w] = delta
+
+                        cols_wc = st.columns(1)
+                        # To keep layout simple, stack them vertically for readability
+                        st.caption("Before (Source)")
+                        try:
+                            render_wordcloud_from_freq(src_freq, "Source Word Cloud")
+                        except Exception:
+                            st.warning("Could not render source word cloud.")
+
+                        st.caption("After (Final)")
+                        try:
+                            render_wordcloud_from_freq(fin_freq, "Final Word Cloud")
+                        except Exception:
+                            st.warning("Could not render final word cloud.")
+
+                        st.caption("Difference (Added Words)")
+                        try:
+                            render_wordcloud_from_freq(diff_freq, "Added Words Word Cloud")
+                        except Exception:
+                            st.warning("Could not render difference word cloud.")
 
                 st.divider()
 
