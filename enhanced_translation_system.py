@@ -1,6 +1,6 @@
 """
 Enhanced Multi-Agent Translation Workflow with LangGraph and LangSmith
-A sophisticated translation system with cultural adaptation, literary editing, and comprehensive monitoring
+A sophisticated translation system with cultural adaptation, literary editing, comprehensive monitoring, and visuals.
 
 Features:
 - 6 specialized translation agents with distinct roles
@@ -12,6 +12,7 @@ Features:
 - Critical passage flagging and review
 - Safe same-language (e.g., English→English) refinement mode
 - BERTScore for same-language runs
+- Visualizations: word counts, sentence-length histograms, readability, issue counts, BERTScore bars
 """
 
 import streamlit as st
@@ -26,6 +27,11 @@ import os
 import io
 import traceback
 import re
+
+# === New: viz imports ===
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
 
 # ===== Language Guardrail =====
 LANGUAGE_GUARDRAIL = (
@@ -319,6 +325,24 @@ def compute_bertscore(candidate: str, reference: str) -> Optional[Dict[str, floa
         }
     except Exception:
         return None
+
+
+# =====================
+# Visualization helpers
+# =====================
+
+def sentence_lengths(text: str) -> List[int]:
+    """Return per-sentence word counts for a text."""
+    if not text:
+        return []
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    return [len(s.split()) for s in sentences if s.strip()]
+
+def nonzero_bins(max_len: int) -> List[int]:
+    """Nice 5-word bins for histograms."""
+    step = 5
+    upper = max(5, ((max_len + step - 1) // step) * step)
+    return list(range(0, upper + step, step))
 
 
 # =====================
@@ -845,6 +869,9 @@ def main():
             help="Type of content"
         )
 
+        st.divider()
+        show_charts = st.checkbox("Show analytics visualizations", value=True)
+
     # Session state
     if 'translation_state' not in st.session_state:
         st.session_state.translation_state = None
@@ -1152,6 +1179,8 @@ def main():
 
         with tab5:
             st.subheader("Analytics")
+
+            # Quick metrics
             col_a, col_b, col_c = st.columns(3)
             with col_a:
                 source_words = len(state['source_text'].split())
@@ -1163,28 +1192,116 @@ def main():
                 total_issues = sum(len(state.get(k, [])) for k in ['literal_issues','cultural_issues','tone_issues','technical_issues','literary_issues'])
                 st.metric("Total Issues Addressed", total_issues)
 
-            # BERTScore (only when same-language)
-            if languages_equivalent(state['source_language'], state['target_language']):
-                st.markdown("#### BERTScore (same-language)")
-                if not BERT_AVAILABLE:
-                    st.info("Install `bert-score` to enable this metric: `pip install bert-score`")
-                else:
-                    refs = state.get('source_text','').strip()
-                    cands = state.get('final_translation','').strip()
-                    if refs and cands:
-                        bs = compute_bertscore(candidate=cands, reference=refs)
-                        if bs:
-                            p, r, f1 = bs["precision"], bs["recall"], bs["f1"]
-                            col1, col2, col3 = st.columns(3)
-                            col1.metric("BERTScore Precision", f"{p:.3f}")
-                            col2.metric("BERTScore Recall", f"{r:.3f}")
-                            col3.metric("BERTScore F1", f"{f1:.3f}")
+            if show_charts:
+                st.divider()
+
+                # ---------- Visuals: Source vs Final word count ----------
+                with st.expander("Word Count Overview", expanded=True):
+                    try:
+                        df_counts = pd.DataFrame(
+                            {"Text": ["Source", "Final"], "Words": [source_words, final_words]}
+                        ).set_index("Text")
+                        st.bar_chart(df_counts)
+                    except Exception:
+                        st.warning("Could not render word count chart.")
+
+                st.divider()
+
+                # ---------- Visuals: Sentence length distributions ----------
+                with st.expander("Sentence Length Distribution (words per sentence)", expanded=False):
+                    src_lens = sentence_lengths(state.get('source_text', ''))
+                    fin_lens = sentence_lengths(state.get('final_translation', ''))
+                    max_len_for_bins = max([0] + src_lens + fin_lens)
+                    bins = nonzero_bins(max_len_for_bins)
+
+                    cols = st.columns(2)
+                    with cols[0]:
+                        st.caption("Source")
+                        try:
+                            fig1, ax1 = plt.subplots()
+                            ax1.hist(src_lens, bins=bins)
+                            ax1.set_xlabel("Words per sentence")
+                            ax1.set_ylabel("Frequency")
+                            ax1.set_title("Source")
+                            st.pyplot(fig1)
+                        except Exception:
+                            st.warning("Could not render source histogram.")
+
+                    with cols[1]:
+                        st.caption("Final")
+                        try:
+                            fig2, ax2 = plt.subplots()
+                            ax2.hist(fin_lens, bins=bins)
+                            ax2.set_xlabel("Words per sentence")
+                            ax2.set_ylabel("Frequency")
+                            ax2.set_title("Final")
+                            st.pyplot(fig2)
+                        except Exception:
+                            st.warning("Could not render final histogram.")
+
+                st.divider()
+
+                # ---------- Optional readability (textstat) ----------
+                with st.expander("Readability (Flesch Reading Ease)", expanded=False):
+                    try:
+                        import textstat
+                        fre_src = textstat.flesch_reading_ease(state.get('source_text', ''))
+                        fre_fin = textstat.flesch_reading_ease(state.get('final_translation', ''))
+                        c1, c2 = st.columns(2)
+                        c1.metric("Source", f"{fre_src:.1f}")
+                        c2.metric("Final", f"{fre_fin:.1f}", delta=f"{fre_fin - fre_src:+.1f}")
+                    except Exception:
+                        st.info("Install `textstat` for readability: `pip install textstat`")
+
+                st.divider()
+
+                # ---------- BERTScore bars (only for same-language refine runs) ----------
+                if languages_equivalent(state['source_language'], state['target_language']):
+                    with st.expander("BERTScore (same-language refine mode)", expanded=True):
+                        if not BERT_AVAILABLE:
+                            st.info("Install `bert-score` to enable this metric: `pip install bert-score`")
                         else:
-                            st.warning("BERTScore could not be computed.")
-                    else:
-                        st.info("Provide both source and final text to compute BERTScore.")
+                            refs = state.get('source_text', '').strip()
+                            cands = state.get('final_translation', '').strip()
+                            if refs and cands:
+                                bs = compute_bertscore(candidate=cands, reference=refs)
+                                if bs:
+                                    try:
+                                        fig3, ax3 = plt.subplots()
+                                        ax3.barh(["Precision", "Recall", "F1"], [bs["precision"], bs["recall"], bs["f1"]])
+                                        ax3.set_xlim(0, 1)
+                                        ax3.set_xlabel("Score")
+                                        ax3.set_title("BERTScore")
+                                        st.pyplot(fig3)
+                                    except Exception:
+                                        st.warning("Could not render BERTScore chart.")
+                                else:
+                                    st.warning("BERTScore could not be computed.")
+                            else:
+                                st.info("Provide both source and final text to compute BERTScore.")
+                else:
+                    st.caption("BERTScore is only shown for same-language refine runs.")
+
+                st.divider()
+
+                # ---------- Issue counts by stage ----------
+                with st.expander("Issues by Stage", expanded=False):
+                    issue_counts = {
+                        "Literal": len(state.get('literal_issues', [])),
+                        "Cultural/Register": len(state.get('cultural_issues', [])),
+                        "Tone": len(state.get('tone_issues', [])),
+                        "Technical": len(state.get('technical_issues', [])),
+                        "Literary": len(state.get('literary_issues', [])),
+                    }
+                    try:
+                        df_issues = pd.DataFrame(
+                            {"Stage": list(issue_counts.keys()), "Count": list(issue_counts.values())}
+                        ).set_index("Stage")
+                        st.bar_chart(df_issues)
+                    except Exception:
+                        st.warning("Could not render issues chart.")
             else:
-                st.caption("BERTScore is only shown for same-language refine runs.")
+                st.info("Visualizations are disabled.")
 
         with tab6:
             st.subheader("History")

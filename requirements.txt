@@ -34,3 +34,4 @@ deep-translator>=1.11.4
 # (optional, for text formatting / export)
 pypandoc>=1.13
 
+textstat
