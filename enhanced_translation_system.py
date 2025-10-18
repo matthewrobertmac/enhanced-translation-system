@@ -42,6 +42,20 @@ try:
 except Exception:
     WORDCLOUD_AVAILABLE = False
 
+# === Entity tracking imports (NEW) ===
+try:
+    import networkx as nx
+    NETWORKX_AVAILABLE = True
+except ImportError:
+    NETWORKX_AVAILABLE = False
+
+try:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
+
 # ===== Language Guardrail =====
 LANGUAGE_GUARDRAIL = (
     "STRICT LANGUAGE GUARDRAIL:\n"
@@ -49,6 +63,205 @@ LANGUAGE_GUARDRAIL = (
     "- Do NOT include any words or phrases in other languages.\n"
     "- Any notes, bullets, or headings must also be in the target language.\n"
 )
+
+# =====================
+# ENTITY TRACKER CLASS (NEW - ADDED FOR ENHANCED FUNCTIONALITY)
+# =====================
+import csv
+from collections import Counter, defaultdict
+
+class EntitiesTracker:
+    """Entity tracking and visualization system with network graphs"""
+    
+    def __init__(self):
+        self.entity_types = {
+            'person': {'emoji': '👤', 'color': '#3b82f6'},
+            'location': {'emoji': '📍', 'color': '#10b981'},
+            'organization': {'emoji': '🏢', 'color': '#f59e0b'},
+            'date': {'emoji': '📅', 'color': '#8b5cf6'},
+            'custom': {'emoji': '🏷️', 'color': '#ef4444'}
+        }
+        
+        if 'entity_glossary' not in st.session_state:
+            st.session_state.entity_glossary = {}
+        
+        if 'extracted_entities' not in st.session_state:
+            st.session_state.extracted_entities = []
+    
+    def extract_entities(self, text: str) -> List[Dict]:
+        """Extract entities from text using glossary and NER patterns"""
+        if not text:
+            return []
+        
+        entities = []
+        
+        # Extract from glossary
+        for term, info in st.session_state.entity_glossary.items():
+            pattern = re.compile(r'\b' + re.escape(term) + r'\b', re.IGNORECASE)
+            matches = pattern.findall(text)
+            
+            # Check aliases
+            alias_count = 0
+            for alias in info.get('aliases', []):
+                alias_pattern = re.compile(r'\b' + re.escape(alias) + r'\b', re.IGNORECASE)
+                alias_matches = alias_pattern.findall(text)
+                alias_count += len(alias_matches)
+            
+            total_count = len(matches) + alias_count
+            
+            if total_count > 0:
+                entities.append({
+                    'name': term,
+                    'type': info.get('type', 'custom'),
+                    'count': total_count,
+                    'description': info.get('description', ''),
+                    'from_glossary': True
+                })
+        
+        # Auto-detection patterns
+        # Person names
+        person_pattern = r'\b([A-Z][a-z]+ [A-Z][a-z]+)\b'
+        for match in re.finditer(person_pattern, text):
+            name = match.group(1)
+            if name not in [e['name'] for e in entities]:
+                count = len(re.findall(r'\b' + re.escape(name) + r'\b', text))
+                entities.append({
+                    'name': name,
+                    'type': 'person',
+                    'count': count,
+                    'description': 'Auto-detected',
+                    'auto_detected': True
+                })
+        
+        # Organizations
+        org_pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:Inc|Corp|LLC|Ltd|Company|Group|Foundation))\b'
+        for match in re.finditer(org_pattern, text):
+            org = match.group(1)
+            if org not in [e['name'] for e in entities]:
+                count = len(re.findall(r'\b' + re.escape(org) + r'\b', text))
+                entities.append({
+                    'name': org,
+                    'type': 'organization',
+                    'count': count,
+                    'description': 'Auto-detected',
+                    'auto_detected': True
+                })
+        
+        return entities
+    
+    def upload_glossary(self, file) -> bool:
+        """Process uploaded glossary file"""
+        try:
+            content = file.read()
+            
+            if file.name.endswith('.json'):
+                new_glossary = json.loads(content)
+            elif file.name.endswith('.csv'):
+                csv_data = io.StringIO(content.decode('utf-8'))
+                reader = csv.DictReader(csv_data)
+                new_glossary = {}
+                for row in reader:
+                    term = row.get('term', '').strip()
+                    if term:
+                        new_glossary[term] = {
+                            'type': row.get('type', 'custom'),
+                            'description': row.get('description', ''),
+                            'aliases': [a.strip() for a in row.get('aliases', '').split(',') if a.strip()]
+                        }
+            else:
+                lines = content.decode('utf-8').split('\n')
+                new_glossary = {}
+                for line in lines:
+                    term = line.strip()
+                    if term:
+                        new_glossary[term] = {'type': 'custom', 'description': '', 'aliases': []}
+            
+            st.session_state.entity_glossary.update(new_glossary)
+            return True
+        except Exception as e:
+            st.error(f"Error processing glossary: {str(e)}")
+            return False
+    
+    def visualize_network(self, entities: List[Dict]):
+        """Create network visualization using plotly"""
+        if not NETWORKX_AVAILABLE or not PLOTLY_AVAILABLE:
+            st.warning("Install networkx and plotly for network visualization")
+            return
+        
+        # Create graph
+        G = nx.Graph()
+        
+        # Add nodes
+        for entity in entities:
+            G.add_node(entity['name'], 
+                      type=entity['type'],
+                      count=entity['count'],
+                      description=entity.get('description', ''))
+        
+        # Add edges (simplified co-occurrence)
+        for i, e1 in enumerate(entities):
+            for e2 in entities[i+1:]:
+                weight = min(e1['count'], e2['count'])
+                G.add_edge(e1['name'], e2['name'], weight=weight)
+        
+        # Create layout
+        pos = nx.spring_layout(G, k=2, iterations=50)
+        
+        # Create edge traces
+        edge_traces = []
+        for edge in G.edges(data=True):
+            x0, y0 = pos[edge[0]]
+            x1, y1 = pos[edge[1]]
+            trace = go.Scatter(x=[x0, x1, None], y=[y0, y1, None],
+                             mode='lines',
+                             line=dict(width=0.5, color='#888'),
+                             hoverinfo='none')
+            edge_traces.append(trace)
+        
+        # Create node trace
+        node_x = []
+        node_y = []
+        node_text = []
+        node_color = []
+        node_size = []
+        
+        for node in G.nodes():
+            x, y = pos[node]
+            node_x.append(x)
+            node_y.append(y)
+            
+            entity = next(e for e in entities if e['name'] == node)
+            node_text.append(f"{node}<br>Type: {entity['type']}<br>Count: {entity['count']}")
+            node_color.append(self.entity_types[entity['type']]['color'])
+            node_size.append(10 + min(entity['count'] * 3, 50))
+        
+        node_trace = go.Scatter(
+            x=node_x, y=node_y,
+            mode='markers+text',
+            text=[n for n in G.nodes()],
+            textposition="top center",
+            hoverinfo='text',
+            hovertext=node_text,
+            marker=dict(
+                size=node_size,
+                color=node_color,
+                line=dict(width=2, color='white')
+            )
+        )
+        
+        # Create figure
+        fig = go.Figure(data=edge_traces + [node_trace],
+                       layout=go.Layout(
+                           title='Entity Network',
+                           showlegend=False,
+                           hovermode='closest',
+                           margin=dict(b=0,l=0,r=0,t=40),
+                           xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                           yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                           height=600
+                       ))
+        
+        st.plotly_chart(fig, use_container_width=True)
 
 # ---- Helpers for same-language paths ----
 def normalize_lang_label(label: str) -> str:
@@ -209,6 +422,11 @@ class TranslationState(TypedDict):
     human_feedback: Optional[str]
     revision_count: int
     needs_human_review: bool
+
+    # Entity tracking (NEW - Optional)
+    source_entities: Optional[List[Dict]]
+    translated_entities: Optional[List[Dict]]
+    entity_preservation_rate: Optional[float]
 
     # Metadata
     started_at: str
@@ -421,6 +639,12 @@ class LiteralTranslationAgent:
 **AUDIENCE**: {state['target_audience']}
 **GENRE**: {state.get('genre', 'General')}
 """
+            
+            # Add entity awareness if enabled (NEW)
+            if 'enable_entity_awareness' in st.session_state and st.session_state.enable_entity_awareness:
+                if state.get('source_entities'):
+                    entity_list = "\n".join([f"- {e['name']} ({e['type']})" for e in state['source_entities'][:15]])
+                    user_prompt += f"\n\n**IMPORTANT ENTITIES TO PRESERVE:**\n{entity_list}\n"
         else:
             user_prompt = f"""Translate the following text from {state['source_language']} to {state['target_language']}.
 {LANGUAGE_GUARDRAIL}
@@ -437,6 +661,12 @@ class LiteralTranslationAgent:
 **TARGET AUDIENCE**: {state['target_audience']}
 **GENRE**: {state.get('genre', 'General')}
 """
+            
+            # Add entity awareness if enabled (NEW)
+            if 'enable_entity_awareness' in st.session_state and st.session_state.enable_entity_awareness:
+                if state.get('source_entities'):
+                    entity_list = "\n".join([f"- {e['name']} ({e['type']})" for e in state['source_entities'][:15]])
+                    user_prompt += f"\n\n**IMPORTANT ENTITIES TO PRESERVE:**\n{entity_list}\n"
 
         try:
             response = self.llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
@@ -701,6 +931,18 @@ class QualityControlAgent:
             state['completed_at'] = datetime.now().isoformat()
             state['critical_passages'] = critical_passages
             state['agent_notes'].append(f"{self.emoji} {self.name}: Final output approved")
+            
+            # Extract entities from final translation if tracking is enabled (NEW)
+            if 'enable_entity_tracking' in st.session_state and st.session_state.enable_entity_tracking:
+                entity_tracker = st.session_state.entity_tracker
+                state['translated_entities'] = entity_tracker.extract_entities(content)
+                
+                # Calculate preservation rate
+                if state.get('source_entities'):
+                    source_names = {e['name'].lower() for e in state['source_entities']}
+                    translated_names = {e['name'].lower() for e in state['translated_entities']}
+                    if source_names:
+                        state['entity_preservation_rate'] = len(source_names & translated_names) / len(source_names)
         except Exception as e:
             st.error(f"Error in Finalize step: {str(e)}")
             state['final_translation'] = state['literary_polish']
@@ -809,6 +1051,24 @@ def main():
         layout="wide",
         initial_sidebar_state="expanded"
     )
+    
+    # Initialize session state FIRST (before any UI elements)
+    if 'translation_state' not in st.session_state:
+        st.session_state.translation_state = None
+    if 'graph' not in st.session_state:
+        st.session_state.graph = None
+    if 'history' not in st.session_state:
+        st.session_state.history = []
+    if 'edited_translation' not in st.session_state:
+        st.session_state.edited_translation = None
+    
+    # Entity tracker initialization (NEW - must be before sidebar)
+    if 'entity_tracker' not in st.session_state:
+        st.session_state.entity_tracker = EntitiesTracker()
+    if 'enable_entity_tracking' not in st.session_state:
+        st.session_state.enable_entity_tracking = False
+    if 'enable_entity_awareness' not in st.session_state:
+        st.session_state.enable_entity_awareness = False
 
     # Custom CSS
     st.markdown("""
@@ -911,16 +1171,50 @@ def main():
 
         st.divider()
         show_charts = st.checkbox("Show analytics visualizations", value=True)
-
-    # Session state
-    if 'translation_state' not in st.session_state:
-        st.session_state.translation_state = None
-    if 'graph' not in st.session_state:
-        st.session_state.graph = None
-    if 'history' not in st.session_state:
-        st.session_state.history = []
-    if 'edited_translation' not in st.session_state:
-        st.session_state.edited_translation = None
+        
+        # Entity Tracking Options (NEW)
+        st.divider()
+        st.subheader("🎯 Entity Tracking")
+        st.session_state.enable_entity_tracking = st.checkbox(
+            "Enable entity tracking",
+            value=st.session_state.enable_entity_tracking,
+            help="Track entities (people, places, organizations) through translation"
+        )
+        
+        if st.session_state.enable_entity_tracking:
+            st.session_state.enable_entity_awareness = st.checkbox(
+                "Entity-aware agents",
+                value=st.session_state.enable_entity_awareness,
+                help="Give translation agents awareness of important entities"
+            )
+            
+            # Glossary upload
+            uploaded_glossary = st.file_uploader(
+                "Upload Entity Glossary",
+                type=['json', 'csv', 'txt'],
+                help="Upload a glossary of important terms to track"
+            )
+            
+            if uploaded_glossary:
+                if st.session_state.entity_tracker.upload_glossary(uploaded_glossary):
+                    st.success(f"✅ Glossary loaded")
+            
+            # Quick add term
+            with st.expander("➕ Quick Add Term"):
+                new_term = st.text_input("Term name")
+                term_type = st.selectbox("Type", ["person", "location", "organization", "date", "custom"])
+                term_desc = st.text_input("Description (optional)")
+                if st.button("Add to Glossary"):
+                    if new_term:
+                        st.session_state.entity_glossary[new_term] = {
+                            'type': term_type,
+                            'description': term_desc,
+                            'aliases': []
+                        }
+                        st.success(f"Added: {new_term}")
+                        st.rerun()
+            
+            st.metric("Glossary Terms", len(st.session_state.entity_glossary))
 
     # Main content
     st.header(f"📝 Interface · {mode_phrase(source_lang, target_lang)}")
@@ -1021,6 +1315,21 @@ def main():
                     "started_at": current_time,
                     "completed_at": None
                 }
+                
+                # Add entity fields if tracking is enabled (NEW)
+                if st.session_state.enable_entity_tracking:
+                    entity_tracker = st.session_state.entity_tracker
+                    source_entities = entity_tracker.extract_entities(source_text)
+                    initial_state['source_entities'] = source_entities
+                    initial_state['translated_entities'] = []
+                    initial_state['entity_preservation_rate'] = 0.0
+                    
+                    if source_entities:
+                        st.info(f"🎯 Tracking {len(source_entities)} entities through translation")
+                else:
+                    initial_state['source_entities'] = None
+                    initial_state['translated_entities'] = None
+                    initial_state['entity_preservation_rate'] = None
 
                 stages = [
                     ("🔤 Baseline pass", 0.17),
@@ -1109,10 +1418,24 @@ def main():
         st.header("🔍 Detailed Analysis")
         state = st.session_state.translation_state
 
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        # Build tabs list dynamically
+        tab_names = [
             "✏️ Edit & Review","🔄 Agent Workflow","📊 All Versions",
             "⚠️ Issues & Feedback","📈 Analytics","📚 History"
-        ])
+        ]
+        
+        # Add entity tab if enabled
+        if st.session_state.enable_entity_tracking:
+            tab_names.append("🎯 Entities")
+        
+        # Create tabs
+        tabs = st.tabs(tab_names)
+        
+        # Original tabs
+        tab1, tab2, tab3, tab4, tab5, tab6 = tabs[:6]
+        
+        # Entity tab if enabled
+        tab7 = tabs[6] if len(tabs) > 6 else None
 
         with tab1:
             st.subheader("Edit & Review")
@@ -1400,6 +1723,203 @@ def main():
                             st.rerun()
             else:
                 st.info("No history yet")
+        
+        # Entity Tab (NEW - only if enabled)
+        if st.session_state.enable_entity_tracking and tab7:
+            with tab7:
+                st.subheader("🎯 Entity Analysis & Tracking")
+                
+                if state:
+                    entity_tracker = st.session_state.entity_tracker
+                    
+                    # Extract entities if not already done
+                    if 'source_entities' not in state or state['source_entities'] is None:
+                        state['source_entities'] = entity_tracker.extract_entities(state.get('source_text', ''))
+                    if 'translated_entities' not in state or state['translated_entities'] is None:
+                        state['translated_entities'] = entity_tracker.extract_entities(state.get('final_translation', ''))
+                    
+                    # Entity comparison
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("### 📖 Source Entities")
+                        source_entities = state.get('source_entities', [])
+                        
+                        if source_entities:
+                            st.metric("Total Entities", len(source_entities))
+                            
+                            # Group by type
+                            entity_types = {}
+                            for entity in source_entities:
+                                if entity['type'] not in entity_types:
+                                    entity_types[entity['type']] = []
+                                entity_types[entity['type']].append(entity)
+                            
+                            for entity_type, entities in entity_types.items():
+                                emoji = entity_tracker.entity_types[entity_type]['emoji']
+                                with st.expander(f"{emoji} {entity_type.capitalize()} ({len(entities)})"):
+                                    for entity in entities[:20]:
+                                        badge = "📚" if entity.get('from_glossary') else "🔮"
+                                        st.write(f"• **{entity['name']}** {badge} (×{entity['count']})")
+                                        if entity.get('description') and entity['description'] != 'Auto-detected':
+                                            st.caption(entity['description'])
+                        else:
+                            st.info("No entities detected in source")
+                    
+                    with col2:
+                        st.markdown("### 📝 Translated Entities")
+                        translated_entities = state.get('translated_entities', [])
+                        
+                        if translated_entities:
+                            st.metric("Total Entities", len(translated_entities))
+                            
+                            # Group by type
+                            entity_types = {}
+                            for entity in translated_entities:
+                                if entity['type'] not in entity_types:
+                                    entity_types[entity['type']] = []
+                                entity_types[entity['type']].append(entity)
+                            
+                            for entity_type, entities in entity_types.items():
+                                emoji = entity_tracker.entity_types[entity_type]['emoji']
+                                with st.expander(f"{emoji} {entity_type.capitalize()} ({len(entities)})"):
+                                    for entity in entities[:20]:
+                                        badge = "📚" if entity.get('from_glossary') else "🔮"
+                                        st.write(f"• **{entity['name']}** {badge} (×{entity['count']})")
+                                        if entity.get('description') and entity['description'] != 'Auto-detected':
+                                            st.caption(entity['description'])
+                        else:
+                            st.info("No entities detected in translation")
+                    
+                    # Preservation analysis
+                    if source_entities and translated_entities:
+                        st.divider()
+                        st.markdown("### 📊 Entity Preservation Analysis")
+                        
+                        source_names = {e['name'].lower() for e in source_entities}
+                        translated_names = {e['name'].lower() for e in translated_entities}
+                        
+                        preserved = source_names & translated_names
+                        lost = source_names - translated_names
+                        added = translated_names - source_names
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            preservation_rate = len(preserved) / len(source_names) * 100 if source_names else 0
+                            st.metric("Preservation Rate", f"{preservation_rate:.1f}%")
+                        
+                        with col2:
+                            st.metric("Preserved", len(preserved))
+                        
+                        with col3:
+                            st.metric("Lost", len(lost))
+                        
+                        with col4:
+                            st.metric("Added", len(added))
+                        
+                        # Details
+                        if lost:
+                            with st.expander(f"⚠️ Lost Entities ({len(lost)})", expanded=len(lost) <= 5):
+                                for name in list(lost)[:30]:
+                                    entity = next((e for e in source_entities if e['name'].lower() == name), None)
+                                    if entity:
+                                        emoji = entity_tracker.entity_types[entity['type']]['emoji']
+                                        st.write(f"{emoji} {entity['name']}")
+                        
+                        if added:
+                            with st.expander(f"➕ Added Entities ({len(added)})"):
+                                for name in list(added)[:30]:
+                                    entity = next((e for e in translated_entities if e['name'].lower() == name), None)
+                                    if entity:
+                                        emoji = entity_tracker.entity_types[entity['type']]['emoji']
+                                        st.write(f"{emoji} {entity['name']}")
+                        
+                        # Network visualization
+                        st.divider()
+                        st.markdown("### 🌐 Entity Network Visualization")
+                        
+                        viz_choice = st.radio(
+                            "Select entities to visualize",
+                            ["Source Entities", "Translated Entities", "All Entities"],
+                            horizontal=True
+                        )
+                        
+                        if viz_choice == "Source Entities":
+                            viz_entities = source_entities[:30]
+                        elif viz_choice == "Translated Entities":
+                            viz_entities = translated_entities[:30]
+                        else:
+                            # Combine but limit total
+                            all_entities = {}
+                            for e in source_entities + translated_entities:
+                                if e['name'] not in all_entities:
+                                    all_entities[e['name']] = e
+                            viz_entities = list(all_entities.values())[:30]
+                        
+                        if viz_entities:
+                            entity_tracker.visualize_network(viz_entities)
+                        
+                        # Comparison chart
+                        if PLOTLY_AVAILABLE:
+                            st.divider()
+                            st.markdown("### 📈 Entity Frequency Comparison")
+                            
+                            # Create comparison data
+                            all_entity_names = {}
+                            for e in source_entities:
+                                all_entity_names[e['name']] = {'source': e['count'], 'translated': 0, 'type': e['type']}
+                            for e in translated_entities:
+                                if e['name'] in all_entity_names:
+                                    all_entity_names[e['name']]['translated'] = e['count']
+                                else:
+                                    all_entity_names[e['name']] = {'source': 0, 'translated': e['count'], 'type': e['type']}
+                            
+                            # Sort by total count and take top 20
+                            sorted_entities = sorted(all_entity_names.items(), 
+                                                   key=lambda x: x[1]['source'] + x[1]['translated'], 
+                                                   reverse=True)[:20]
+                            
+                            if sorted_entities:
+                                import pandas as pd
+                                df_data = []
+                                for name, counts in sorted_entities:
+                                    df_data.append({
+                                        'Entity': name,
+                                        'Source': counts['source'],
+                                        'Translated': counts['translated']
+                                    })
+                                
+                                df = pd.DataFrame(df_data)
+                                
+                                # Create grouped bar chart
+                                fig = go.Figure()
+                                fig.add_trace(go.Bar(
+                                    name='Source',
+                                    y=df['Entity'],
+                                    x=df['Source'],
+                                    orientation='h',
+                                    marker_color='#3b82f6'
+                                ))
+                                fig.add_trace(go.Bar(
+                                    name='Translated',
+                                    y=df['Entity'],
+                                    x=df['Translated'],
+                                    orientation='h',
+                                    marker_color='#10b981'
+                                ))
+                                
+                                fig.update_layout(
+                                    title='Top 20 Entities: Source vs Translated',
+                                    xaxis_title='Occurrences',
+                                    barmode='group',
+                                    height=600,
+                                    margin=dict(l=150)
+                                )
+                                
+                                st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("Complete a translation to see entity analysis")
 
 
 if __name__ == "__main__":

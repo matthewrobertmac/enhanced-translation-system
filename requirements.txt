@@ -36,3 +36,7 @@ deep-translator>=1.11.4
 pypandoc>=1.13
 
 textstat
+
+plotly 
+networkx
+
