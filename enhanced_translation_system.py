@@ -3,7 +3,7 @@ Enhanced Multi-Agent Translation Workflow with LangGraph and LangSmith
 A sophisticated translation system with cultural adaptation, literary editing, comprehensive monitoring, and visuals.
 
 Features:
-- 6 specialized translation agents with distinct roles
+- 7 specialized translation agents with distinct roles (including BERTScore validator)
 - Support for OpenAI and Anthropic models
 - Optional LangSmith tracing and monitoring
 - Comprehensive agent feedback system
@@ -11,9 +11,10 @@ Features:
 - Multiple export formats (txt, docx, md)
 - Critical passage flagging and review
 - Safe same-language (e.g., English→English) refinement mode
-- BERTScore for same-language runs
+- BERTScore validation with iterative refinement
 - Visualizations: word counts, sentence-length histograms, readability, issue counts, BERTScore bars
 - Word clouds: Source, Final, and Difference (words added)
+- Entity tracking and network visualization
 """
 
 import streamlit as st
@@ -384,6 +385,25 @@ AGENT_DESCRIPTIONS = {
         "role": "Final Integration & Excellence Assurance",
         "description": "Integrate all contributions and approve the final version.",
         "expertise": ["Editorial judgment", "Synthesis", "Holistic QA"]
+    },
+    "bertscore_validator": {
+        "name": "Semantic Fidelity Validator",
+        "emoji": "🎯",
+        "role": "Semantic Similarity Assurance (same-language only)",
+        "description": """
+        **Primary Responsibility:** Ensure semantic fidelity in same-language refinement.
+        - Only active when source and target languages are equivalent
+        - Validates BERTScore ≥ 0.8 for semantic preservation
+        - Iteratively refines output to meet threshold
+        - Maximum 3 refinement attempts
+
+        **Key Functions:**
+        - Compute BERTScore (P/R/F1) against source
+        - Identify semantic drift areas
+        - Apply targeted refinements without over-editing
+        - Preserve meaning while improving clarity
+        """,
+        "expertise": ["Semantic analysis", "Embedding comparison", "Iterative refinement", "Fidelity validation"]
     }
 }
 
@@ -427,6 +447,10 @@ class TranslationState(TypedDict):
     source_entities: Optional[List[Dict]]
     translated_entities: Optional[List[Dict]]
     entity_preservation_rate: Optional[float]
+
+    # BERTScore tracking (NEW)
+    bertscore_attempts: int
+    bertscore_history: List[Dict]
 
     # Metadata
     started_at: str
@@ -952,6 +976,119 @@ class QualityControlAgent:
         return state
 
 
+class BERTScoreValidatorAgent:
+    def __init__(self, llm: BaseChatModel):
+        self.llm = llm
+        self.name = "Semantic Fidelity Validator"
+        self.emoji = "🎯"
+        self.max_attempts = 3
+        self.target_score = 0.8
+
+    def validate_and_refine(self, state: TranslationState) -> TranslationState:
+        """Validate BERTScore and refine if needed (same-language mode only)"""
+        
+        # Only run in same-language mode
+        if not languages_equivalent(state['source_language'], state['target_language']):
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Skipped (cross-language mode)")
+            return state
+        
+        if not BERT_AVAILABLE:
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Skipped (bert-score not installed)")
+            return state
+
+        source_text = state['source_text']
+        current_text = state['final_translation']
+        
+        # Initialize tracking
+        if 'bertscore_attempts' not in state:
+            state['bertscore_attempts'] = 0
+        if 'bertscore_history' not in state:
+            state['bertscore_history'] = []
+        
+        attempt = 0
+        while attempt < self.max_attempts:
+            state['bertscore_attempts'] += 1
+            attempt += 1
+            
+            # Compute BERTScore
+            scores = compute_bertscore(current_text, source_text)
+            
+            if scores is None:
+                state['agent_notes'].append(f"{self.emoji} {self.name}: BERTScore computation failed")
+                break
+            
+            f1_score = scores['f1']
+            state['bertscore_history'].append({
+                'attempt': state['bertscore_attempts'],
+                'f1': f1_score,
+                'precision': scores['precision'],
+                'recall': scores['recall']
+            })
+            
+            # Check if threshold met
+            if f1_score >= self.target_score:
+                state['agent_notes'].append(
+                    f"{self.emoji} {self.name}: ✅ BERTScore validated (F1={f1_score:.3f})"
+                )
+                state['final_translation'] = current_text
+                break
+            
+            # Need refinement
+            if attempt >= self.max_attempts:
+                state['agent_notes'].append(
+                    f"{self.emoji} {self.name}: ⚠️ Max attempts reached (F1={f1_score:.3f} < {self.target_score})"
+                )
+                state['needs_human_review'] = True
+                break
+            
+            # Request refinement
+            state['agent_notes'].append(
+                f"{self.emoji} {self.name}: 🔄 Refining (F1={f1_score:.3f} < {self.target_score}, attempt {attempt}/{self.max_attempts})"
+            )
+            
+            system_prompt = (
+                "You are a semantic fidelity specialist. Your ONLY goal is to increase semantic similarity "
+                "to the source text while maintaining natural language quality.\n\n"
+                + LANGUAGE_GUARDRAIL
+            )
+            
+            user_prompt = f"""The current refined text has insufficient semantic similarity to the source (BERTScore F1: {f1_score:.3f}, target: {self.target_score}).
+
+{LANGUAGE_GUARDRAIL}
+
+**SOURCE TEXT (preserve its meaning):**
+{source_text}
+
+**CURRENT REFINED TEXT (needs closer alignment):**
+{current_text}
+
+**YOUR TASK:**
+1. Identify where meaning has drifted from the source
+2. Adjust ONLY those areas to restore semantic fidelity
+3. DO NOT over-edit - preserve what is already good
+4. Maintain natural, fluent language
+5. Keep technical terms and proper nouns identical
+
+**CRITICAL:** The goal is semantic similarity, not word-for-word copying. Preserve the SOURCE's meaning using natural language.
+
+**OUTPUT:** Provide ONLY the refined text in {state['target_language']}, with no meta-commentary."""
+
+            try:
+                response = self.llm.invoke([
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_prompt)
+                ])
+                current_text = reinforce_language(self.llm, response.content.strip(), state['target_language'])
+                
+            except Exception as e:
+                st.error(f"Error in BERTScore refinement: {str(e)}")
+                state['agent_notes'].append(f"{self.emoji} {self.name}: Error during refinement - {str(e)}")
+                break
+        
+        state['final_translation'] = current_text
+        return state
+
+
 # =====================
 # LLM Initialization Helper
 # =====================
@@ -1016,6 +1153,7 @@ def build_translation_graph(llm: BaseChatModel) -> StateGraph:
     technical_agent = TechnicalReviewAgent(llm)
     literary_agent = LiteraryEditorAgent(llm)
     qc_agent = QualityControlAgent(llm)
+    bertscore_agent = BERTScoreValidatorAgent(llm)  # NEW
 
     workflow = StateGraph(TranslationState)
     workflow.add_node("literal_translation", literal_agent.translate)
@@ -1024,6 +1162,7 @@ def build_translation_graph(llm: BaseChatModel) -> StateGraph:
     workflow.add_node("technical_review", technical_agent.review)
     workflow.add_node("literary_polish", literary_agent.polish)
     workflow.add_node("finalize", qc_agent.finalize)
+    workflow.add_node("bertscore_validation", bertscore_agent.validate_and_refine)  # NEW
 
     workflow.set_entry_point("literal_translation")
     workflow.add_edge("literal_translation", "cultural_adaptation")
@@ -1035,7 +1174,8 @@ def build_translation_graph(llm: BaseChatModel) -> StateGraph:
         {"human_review": END, "literary_polish": "literary_polish"}
     )
     workflow.add_edge("literary_polish", "finalize")
-    workflow.add_edge("finalize", END)
+    workflow.add_edge("finalize", "bertscore_validation")  # NEW
+    workflow.add_edge("bertscore_validation", END)  # NEW
 
     return workflow.compile()
 
@@ -1220,7 +1360,7 @@ def main():
     st.header(f"📝 Interface · {mode_phrase(source_lang, target_lang)}")
 
     with st.expander("📚 Learn About Our Translation Agents", expanded=False):
-        st.markdown("### The Six-Agent Pipeline")
+        st.markdown("### The Seven-Agent Pipeline")
         for _, agent_info in AGENT_DESCRIPTIONS.items():
             st.markdown(f"""
             <div class="agent-card">
@@ -1312,6 +1452,8 @@ def main():
                     "human_feedback": None,
                     "revision_count": 0,
                     "needs_human_review": False,
+                    "bertscore_attempts": 0,
+                    "bertscore_history": [],
                     "started_at": current_time,
                     "completed_at": None
                 }
@@ -1332,12 +1474,13 @@ def main():
                     initial_state['entity_preservation_rate'] = None
 
                 stages = [
-                    ("🔤 Baseline pass", 0.17),
-                    ("🌍 Cultural/Register adaptation", 0.34),
-                    ("🎭 Tone consistency", 0.51),
-                    ("🔬 Technical review", 0.68),
-                    ("✍️ Literary polish", 0.85),
-                    ("✅ Finalize", 1.0)
+                    ("🔤 Baseline pass", 0.14),
+                    ("🌍 Cultural/Register adaptation", 0.29),
+                    ("🎭 Tone consistency", 0.43),
+                    ("🔬 Technical review", 0.57),
+                    ("✍️ Literary polish", 0.71),
+                    ("✅ Finalize", 0.86),
+                    ("🎯 Semantic validation", 1.0)  # NEW
                 ]
                 for stage_name, progress_val in stages:
                     with status_container.container():
@@ -1610,7 +1753,7 @@ def main():
                         st.info("Install `wordcloud` to enable this: `pip install wordcloud`")
                     else:
                         # Build stopword set: wordcloud's STOPWORDS plus a few common extras
-                        sw = set(STOPWORDS) | {"—", "–", "’", "”", "“", "…"}
+                        sw = set(STOPWORDS) | {"—", "–", "'", """, """, "…"}
 
                         src_text = state.get('source_text', '')
                         fin_text = state.get('final_translation', '')
@@ -1685,6 +1828,31 @@ def main():
                                     st.warning("BERTScore could not be computed.")
                             else:
                                 st.info("Provide both source and final text to compute BERTScore.")
+                        
+                        # BERTScore refinement history (NEW)
+                        if state.get('bertscore_history'):
+                            st.divider()
+                            st.markdown("#### 🎯 BERTScore Refinement History")
+                            
+                            history_df = pd.DataFrame(state['bertscore_history'])
+                            
+                            try:
+                                fig_history, ax_history = plt.subplots()
+                                ax_history.plot(history_df['attempt'], history_df['f1'], 'o-', label='F1', linewidth=2)
+                                ax_history.plot(history_df['attempt'], history_df['precision'], 's-', label='Precision', alpha=0.7)
+                                ax_history.plot(history_df['attempt'], history_df['recall'], '^-', label='Recall', alpha=0.7)
+                                ax_history.axhline(y=0.8, color='r', linestyle='--', label='Target (0.8)')
+                                ax_history.set_xlabel('Refinement Attempt')
+                                ax_history.set_ylabel('Score')
+                                ax_history.set_title('BERTScore Evolution')
+                                ax_history.legend()
+                                ax_history.grid(True, alpha=0.3)
+                                ax_history.set_ylim(0, 1)
+                                st.pyplot(fig_history)
+                                
+                                st.caption(f"Total attempts: {len(history_df)} | Final F1: {history_df.iloc[-1]['f1']:.3f}")
+                            except Exception:
+                                st.warning("Could not render BERTScore refinement history chart.")
                 else:
                     st.caption("BERTScore is only shown for same-language refine runs.")
 
@@ -1881,7 +2049,6 @@ def main():
                                                    reverse=True)[:20]
                             
                             if sorted_entities:
-                                import pandas as pd
                                 df_data = []
                                 for name, counts in sorted_entities:
                                     df_data.append({
@@ -1924,4 +2091,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
