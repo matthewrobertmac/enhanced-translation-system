@@ -3,6 +3,7 @@ Enhanced Multi-Agent Translation Workflow with LangGraph and LangSmith
 A sophisticated translation system with cultural adaptation, literary editing, comprehensive monitoring, and visuals.
 
 Features:
+- INTELLIGENT PLANNING AGENT - dynamically selects required agents
 - 7 specialized translation agents with distinct roles (including BERTScore validator)
 - Support for OpenAI and Anthropic models
 - Optional LangSmith tracing and monitoring
@@ -43,7 +44,7 @@ try:
 except Exception:
     WORDCLOUD_AVAILABLE = False
 
-# === Entity tracking imports (NEW) ===
+# === Entity tracking imports ===
 try:
     import networkx as nx
     NETWORKX_AVAILABLE = True
@@ -66,7 +67,7 @@ LANGUAGE_GUARDRAIL = (
 )
 
 # =====================
-# ENTITY TRACKER CLASS (NEW - ADDED FOR ENHANCED FUNCTIONALITY)
+# ENTITY TRACKER CLASS
 # =====================
 import csv
 from collections import Counter, defaultdict
@@ -331,6 +332,22 @@ except Exception:
 # AGENT ROLE DESCRIPTIONS
 # =====================
 AGENT_DESCRIPTIONS = {
+    "planning": {
+        "name": "Workflow Planning Specialist",
+        "emoji": "📋",
+        "role": "Intelligent Agent Selection & Routing",
+        "description": """
+        **Primary Responsibility:** Analyze source text and dynamically determine which agents are needed.
+
+        **Key Functions:**
+        - Assess text complexity and characteristics
+        - Detect technical, cultural, and literary elements
+        - Select optimal agent sequence for the task
+        - Estimate time and cost savings
+        - Provide reasoning for all decisions
+        """,
+        "expertise": ["Text analysis", "Workflow optimization", "Resource efficiency", "Quality assurance"]
+    },
     "literal_translator": {
         "name": "Baseline Specialist",
         "emoji": "🔤",
@@ -409,7 +426,7 @@ AGENT_DESCRIPTIONS = {
 
 
 # =====================
-# State Definition
+# State Definition (UPDATED WITH PLANNING FIELDS)
 # =====================
 class TranslationState(TypedDict):
     source_text: str
@@ -443,14 +460,23 @@ class TranslationState(TypedDict):
     revision_count: int
     needs_human_review: bool
 
-    # Entity tracking (NEW - Optional)
+    # Entity tracking (Optional)
     source_entities: Optional[List[Dict]]
     translated_entities: Optional[List[Dict]]
     entity_preservation_rate: Optional[float]
 
-    # BERTScore tracking (NEW)
+    # BERTScore tracking
     bertscore_attempts: int
     bertscore_history: List[Dict]
+
+    # Planning fields
+    agent_plan: List[str]
+    agent_plan_reasoning: Dict[str, str]
+    planning_analysis: Dict[str, any]
+    skipped_agents: List[str]
+    estimated_complexity: str
+    current_agent_index: int
+    planning_enabled: bool
 
     # Metadata
     started_at: str
@@ -567,7 +593,6 @@ def compute_bertscore(candidate: str, reference: str) -> Optional[Dict[str, floa
     if not BERT_AVAILABLE:
         return None
     try:
-        # bert-score expects lists of strings
         P, R, F1 = bert_score_fn([candidate], [reference], lang="en", rescale_with_baseline=True)
         return {
             "precision": float(P.mean().item()),
@@ -595,7 +620,6 @@ def nonzero_bins(max_len: int) -> List[int]:
     upper = max(5, ((max_len + step - 1) // step) * step)
     return list(range(0, upper + step, step))
 
-# --- New: word frequency + wordcloud helpers ---
 _WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ']+")
 
 def tokenize_words(text: str) -> List[str]:
@@ -628,7 +652,220 @@ def render_wordcloud_from_freq(freqs: Dict[str, int], title: str):
 
 
 # =====================
-# Enhanced Agent Definitions (translation & refine-aware)
+# PLANNING AGENT
+# =====================
+
+class PlanningAgent:
+    def __init__(self, llm: BaseChatModel):
+        self.llm = llm
+        self.name = "Workflow Planning Specialist"
+        self.emoji = "📋"
+    
+    def analyze_and_plan(self, state: TranslationState) -> TranslationState:
+        """Analyze text and create execution plan"""
+        
+        # Check if planning is disabled (manual override)
+        if not state.get('planning_enabled', True):
+            state['agent_plan'] = [
+                'literal_translator', 'cultural_adapter', 'tone_specialist',
+                'technical_reviewer', 'literary_editor', 'finalize', 'bertscore_validator'
+            ]
+            state['agent_plan_reasoning'] = {
+                'literal_translator': '✅ Required - baseline',
+                'cultural_adapter': '✅ Included - planning disabled',
+                'tone_specialist': '✅ Included - planning disabled',
+                'technical_reviewer': '✅ Included - planning disabled',
+                'literary_editor': '✅ Included - planning disabled',
+                'finalize': '✅ Required - final review',
+                'bertscore_validator': '✅ Included - planning disabled'
+            }
+            state['skipped_agents'] = []
+            state['estimated_complexity'] = 'full'
+            state['current_agent_index'] = 0
+            state['planning_analysis'] = {'mode': 'manual_override'}
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Planning disabled - running all agents")
+            return state
+        
+        source_text = state['source_text']
+        source_lang = state['source_language']
+        target_lang = state['target_language']
+        audience = state['target_audience']
+        genre = state.get('genre', 'General')
+        same_lang = languages_equivalent(source_lang, target_lang)
+        
+        # Check for manual overrides from session state
+        force_cultural = st.session_state.get('force_cultural_adapter', False)
+        force_tone = st.session_state.get('force_tone_specialist', False)
+        force_technical = st.session_state.get('force_technical_reviewer', False)
+        force_literary = st.session_state.get('force_literary_editor', False)
+        force_bertscore = st.session_state.get('force_bertscore_validator', False)
+        
+        system_prompt = f"""You are an expert translation workflow planner. Analyze the source text and determine which translation agents are needed.
+
+AVAILABLE AGENTS:
+1. literal_translator (ALWAYS REQUIRED) - Creates initial translation/refinement
+2. cultural_adapter - Handles idioms, cultural references, localization
+3. tone_specialist - Ensures voice consistency and readability
+4. technical_reviewer - Validates technical accuracy, terminology, units
+5. literary_editor - Elevates prose quality for publication
+6. finalize (ALWAYS REQUIRED) - Final quality synthesis
+7. bertscore_validator - Semantic fidelity validation (same-language only)
+
+ANALYSIS CRITERIA:
+- Text length: {len(source_text)} characters, ~{len(source_text.split())} words
+- Language pair: {source_lang} → {target_lang} (same-language: {same_lang})
+- Target audience: {audience}
+- Genre: {genre}
+- Look for: technical terms, cultural references, idioms, literary elements, tone consistency issues
+
+SELECTION GUIDELINES:
+- literal_translator & finalize: ALWAYS include
+- cultural_adapter: Include if cross-language OR idioms/cultural content OR same-lang with register differences
+- tone_specialist: Include if >500 words OR inconsistent tone detected OR multiple sections
+- technical_reviewer: Include if technical terminology, formulas, units, citations present
+- literary_editor: Include if literary genre OR narrative elements OR high-polish audience
+- bertscore_validator: ONLY if same-language mode AND available
+
+EFFICIENCY GOAL: Include only agents that will meaningfully improve output. When uncertain, include the agent (favor quality over speed).
+
+OUTPUT FORMAT: Return ONLY valid JSON (no markdown, no backticks):
+{{
+    "required_agents": ["literal_translator", "cultural_adapter", "finalize"],
+    "reasoning": {{
+        "literal_translator": "✅ Required - baseline",
+        "cultural_adapter": "✅ Detected 2 idioms and cross-language pair",
+        "tone_specialist": "⏭️ Skipped - short text (120 words), consistent tone",
+        "technical_reviewer": "⏭️ Skipped - no technical content",
+        "literary_editor": "⏭️ Skipped - casual genre",
+        "finalize": "✅ Required - final review",
+        "bertscore_validator": "⏭️ Skipped - cross-language"
+    }},
+    "analysis": {{
+        "length": 120,
+        "complexity_score": 2.3,
+        "technical_terms_count": 0,
+        "cultural_references_count": 2,
+        "tone_consistency": "high",
+        "literary_elements": "minimal"
+    }},
+    "estimated_complexity": "simple"
+}}
+"""
+
+        user_prompt = f"""Analyze this text and create an optimal translation workflow plan:
+
+SOURCE TEXT:
+{source_text[:2000]}{'...' if len(source_text) > 2000 else ''}
+
+Return ONLY the JSON plan, no other text."""
+
+        try:
+            response = self.llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ])
+            
+            content = response.content.strip()
+            content = re.sub(r'```json\s*', '', content)
+            content = re.sub(r'```\s*$', '', content)
+            
+            plan_data = json.loads(content)
+            
+            required_agents = plan_data.get('required_agents', [])
+            reasoning = plan_data.get('reasoning', {})
+            analysis = plan_data.get('analysis', {})
+            complexity = plan_data.get('estimated_complexity', 'moderate')
+            
+            # Apply manual overrides
+            if force_cultural and 'cultural_adapter' not in required_agents:
+                required_agents.insert(1, 'cultural_adapter')
+                reasoning['cultural_adapter'] = '✅ Forced by user override'
+            
+            if force_tone and 'tone_specialist' not in required_agents:
+                insert_pos = 2 if 'cultural_adapter' in required_agents else 1
+                required_agents.insert(insert_pos, 'tone_specialist')
+                reasoning['tone_specialist'] = '✅ Forced by user override'
+            
+            if force_technical and 'technical_reviewer' not in required_agents:
+                finalize_pos = required_agents.index('finalize') if 'finalize' in required_agents else len(required_agents)
+                required_agents.insert(finalize_pos, 'technical_reviewer')
+                reasoning['technical_reviewer'] = '✅ Forced by user override'
+            
+            if force_literary and 'literary_editor' not in required_agents:
+                finalize_pos = required_agents.index('finalize') if 'finalize' in required_agents else len(required_agents)
+                required_agents.insert(finalize_pos, 'literary_editor')
+                reasoning['literary_editor'] = '✅ Forced by user override'
+            
+            if force_bertscore and 'bertscore_validator' not in required_agents and same_lang:
+                required_agents.append('bertscore_validator')
+                reasoning['bertscore_validator'] = '✅ Forced by user override'
+            
+            # Ensure required agents are present
+            if 'literal_translator' not in required_agents:
+                required_agents.insert(0, 'literal_translator')
+            if 'finalize' not in required_agents:
+                required_agents.append('finalize')
+            
+            all_agents = ['literal_translator', 'cultural_adapter', 'tone_specialist', 
+                         'technical_reviewer', 'literary_editor', 'finalize', 'bertscore_validator']
+            skipped = [a for a in all_agents if a not in required_agents]
+            
+            state['agent_plan'] = required_agents
+            state['agent_plan_reasoning'] = reasoning
+            state['planning_analysis'] = analysis
+            state['skipped_agents'] = skipped
+            state['estimated_complexity'] = complexity
+            state['current_agent_index'] = 0
+            
+            total_agents = len(all_agents)
+            used_agents = len(required_agents)
+            savings_pct = int((1 - used_agents / total_agents) * 100)
+            
+            state['agent_notes'].append(
+                f"{self.emoji} {self.name}: Plan created - {used_agents}/{total_agents} agents "
+                f"({savings_pct}% savings) - Complexity: {complexity}"
+            )
+            
+        except Exception as e:
+            st.warning(f"Planning agent failed, using conservative defaults: {str(e)}")
+            state['agent_plan'] = [
+                'literal_translator', 'cultural_adapter', 'tone_specialist',
+                'technical_reviewer', 'literary_editor', 'finalize'
+            ]
+            if same_lang and BERT_AVAILABLE:
+                state['agent_plan'].append('bertscore_validator')
+            
+            state['agent_plan_reasoning'] = {
+                a: '✅ Included (fallback mode)' for a in state['agent_plan']
+            }
+            state['skipped_agents'] = []
+            state['estimated_complexity'] = 'unknown'
+            state['current_agent_index'] = 0
+            state['planning_analysis'] = {'error': str(e), 'mode': 'fallback'}
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Planning failed - using all agents (safe mode)")
+        
+        return state
+
+
+# =====================
+# FIXED ROUTER FUNCTION
+# =====================
+
+def route_to_next_agent(state: TranslationState) -> str:
+    """Determine next agent based on the plan"""
+    agent_plan = state.get('agent_plan', [])
+    current_index = state.get('current_agent_index', 0)
+    
+    if current_index >= len(agent_plan):
+        return END
+    
+    next_agent = agent_plan[current_index]
+    
+    return next_agent
+
+
+# =====================
+# FIXED AGENT CLASSES - Each increments index
 # =====================
 
 class LiteralTranslationAgent:
@@ -664,7 +901,6 @@ class LiteralTranslationAgent:
 **GENRE**: {state.get('genre', 'General')}
 """
             
-            # Add entity awareness if enabled (NEW)
             if 'enable_entity_awareness' in st.session_state and st.session_state.enable_entity_awareness:
                 if state.get('source_entities'):
                     entity_list = "\n".join([f"- {e['name']} ({e['type']})" for e in state['source_entities'][:15]])
@@ -686,7 +922,6 @@ class LiteralTranslationAgent:
 **GENRE**: {state.get('genre', 'General')}
 """
             
-            # Add entity awareness if enabled (NEW)
             if 'enable_entity_awareness' in st.session_state and st.session_state.enable_entity_awareness:
                 if state.get('source_entities'):
                     entity_list = "\n".join([f"- {e['name']} ({e['type']})" for e in state['source_entities'][:15]])
@@ -696,7 +931,6 @@ class LiteralTranslationAgent:
             response = self.llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
             content = response.content
 
-            # Parse notes (supports both translator and editor labels)
             translation, found_label, notes = split_notes(content, ["TRANSLATOR NOTES:", "EDITOR NOTES:"])
             issues = []
             if notes:
@@ -715,6 +949,9 @@ class LiteralTranslationAgent:
             state['literal_translation'] = state['source_text']
             state['literal_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
             state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using source text")
+        
+        # INCREMENT INDEX
+        state['current_agent_index'] = state.get('current_agent_index', 0) + 1
         return state
 
 
@@ -777,6 +1014,9 @@ class CulturalAdaptationAgent:
             state['cultural_adaptation'] = state['literal_translation']
             state['cultural_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
             state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using previous version")
+        
+        # INCREMENT INDEX
+        state['current_agent_index'] = state.get('current_agent_index', 0) + 1
         return state
 
 
@@ -788,13 +1028,16 @@ class ToneConsistencyAgent:
 
     def adjust_tone(self, state: TranslationState) -> TranslationState:
         system_prompt = "You ensure tone/voice consistency and natural readability.\n\n" + LANGUAGE_GUARDRAIL
+        
+        previous_text = state.get('cultural_adaptation') or state.get('literal_translation')
+        
         user_prompt = f"""Adjust this text for tone consistency and readability.
 
 {LANGUAGE_GUARDRAIL}
 
 **AUDIENCE**: {state['target_audience']}
 **TEXT:**
-{state['cultural_adaptation']}
+{previous_text}
 
 **YOUR TASKS:**
 1. Vary sentence length for rhythm
@@ -819,9 +1062,12 @@ class ToneConsistencyAgent:
             state['agent_notes'].append(f"{self.emoji} {self.name}: Tone/readability optimized")
         except Exception as e:
             st.error(f"Error in Tone step: {str(e)}")
-            state['tone_adjustment'] = state['cultural_adaptation']
+            state['tone_adjustment'] = previous_text
             state['tone_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
             state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using previous version")
+        
+        # INCREMENT INDEX
+        state['current_agent_index'] = state.get('current_agent_index', 0) + 1
         return state
 
 
@@ -833,12 +1079,17 @@ class TechnicalReviewAgent:
 
     def review(self, state: TranslationState) -> TranslationState:
         system_prompt = "You verify notation, terminology, units, and formatting.\n\n" + LANGUAGE_GUARDRAIL
+        
+        previous_text = (state.get('tone_adjustment') or 
+                        state.get('cultural_adaptation') or 
+                        state.get('literal_translation'))
+        
         user_prompt = f"""Review the following for technical accuracy.
 
 {LANGUAGE_GUARDRAIL}
 
 **TEXT:**
-{state['tone_adjustment']}
+{previous_text}
 
 **YOUR TASKS:**
 1. Verify notation/symbols
@@ -866,10 +1117,13 @@ class TechnicalReviewAgent:
             state['agent_notes'].append(f"{self.emoji} {self.name}: Technical review completed")
         except Exception as e:
             st.error(f"Error in Technical step: {str(e)}")
-            state['technical_review_version'] = state['tone_adjustment']
+            state['technical_review_version'] = previous_text
             state['technical_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
             state['needs_human_review'] = False
             state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using previous version")
+        
+        # INCREMENT INDEX
+        state['current_agent_index'] = state.get('current_agent_index', 0) + 1
         return state
 
 
@@ -881,12 +1135,18 @@ class LiteraryEditorAgent:
 
     def polish(self, state: TranslationState) -> TranslationState:
         system_prompt = "You elevate prose to publication quality without altering meaning.\n\n" + LANGUAGE_GUARDRAIL
+        
+        previous_text = (state.get('technical_review_version') or
+                        state.get('tone_adjustment') or 
+                        state.get('cultural_adaptation') or 
+                        state.get('literal_translation'))
+        
         user_prompt = f"""Polish this text to publication quality.
 
 {LANGUAGE_GUARDRAIL}
 
 **TEXT:**
-{state['technical_review_version']}
+{previous_text}
 **AUDIENCE**: {state['target_audience']}
 
 **YOUR TASKS:**
@@ -913,9 +1173,12 @@ class LiteraryEditorAgent:
             state['agent_notes'].append(f"{self.emoji} {self.name}: Literary polish completed")
         except Exception as e:
             st.error(f"Error in Literary step: {str(e)}")
-            state['literary_polish'] = state['technical_review_version']
+            state['literary_polish'] = previous_text
             state['literary_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
             state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using previous version")
+        
+        # INCREMENT INDEX
+        state['current_agent_index'] = state.get('current_agent_index', 0) + 1
         return state
 
 
@@ -936,12 +1199,20 @@ class QualityControlAgent:
             state.get('literary_issues', [])
         )
 
+        latest_version = (
+            state.get('literary_polish') or
+            state.get('technical_review_version') or
+            state.get('tone_adjustment') or
+            state.get('cultural_adaptation') or
+            state.get('literal_translation')
+        )
+
         user_prompt = f"""Produce the final, publication-ready text.
 
 {LANGUAGE_GUARDRAIL}
 
 **LATEST VERSION:**
-{state['literary_polish']}
+{latest_version}
 
 **OUTPUT**: Provide ONLY the final text without meta-commentary, entirely in {state['target_language']}.
 """
@@ -956,12 +1227,10 @@ class QualityControlAgent:
             state['critical_passages'] = critical_passages
             state['agent_notes'].append(f"{self.emoji} {self.name}: Final output approved")
             
-            # Extract entities from final translation if tracking is enabled (NEW)
             if 'enable_entity_tracking' in st.session_state and st.session_state.enable_entity_tracking:
                 entity_tracker = st.session_state.entity_tracker
                 state['translated_entities'] = entity_tracker.extract_entities(content)
                 
-                # Calculate preservation rate
                 if state.get('source_entities'):
                     source_names = {e['name'].lower() for e in state['source_entities']}
                     translated_names = {e['name'].lower() for e in state['translated_entities']}
@@ -969,10 +1238,13 @@ class QualityControlAgent:
                         state['entity_preservation_rate'] = len(source_names & translated_names) / len(source_names)
         except Exception as e:
             st.error(f"Error in Finalize step: {str(e)}")
-            state['final_translation'] = state['literary_polish']
+            state['final_translation'] = latest_version
             state['completed_at'] = datetime.now().isoformat()
             state['critical_passages'] = []
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using literary version")
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using latest version")
+        
+        # INCREMENT INDEX
+        state['current_agent_index'] = state.get('current_agent_index', 0) + 1
         return state
 
 
@@ -987,19 +1259,19 @@ class BERTScoreValidatorAgent:
     def validate_and_refine(self, state: TranslationState) -> TranslationState:
         """Validate BERTScore and refine if needed (same-language mode only)"""
         
-        # Only run in same-language mode
         if not languages_equivalent(state['source_language'], state['target_language']):
             state['agent_notes'].append(f"{self.emoji} {self.name}: Skipped (cross-language mode)")
+            state['current_agent_index'] = state.get('current_agent_index', 0) + 1
             return state
         
         if not BERT_AVAILABLE:
             state['agent_notes'].append(f"{self.emoji} {self.name}: Skipped (bert-score not installed)")
+            state['current_agent_index'] = state.get('current_agent_index', 0) + 1
             return state
 
         source_text = state['source_text']
         current_text = state['final_translation']
         
-        # Initialize tracking
         if 'bertscore_attempts' not in state:
             state['bertscore_attempts'] = 0
         if 'bertscore_history' not in state:
@@ -1010,7 +1282,6 @@ class BERTScoreValidatorAgent:
             state['bertscore_attempts'] += 1
             attempt += 1
             
-            # Compute BERTScore
             scores = compute_bertscore(current_text, source_text)
             
             if scores is None:
@@ -1025,7 +1296,6 @@ class BERTScoreValidatorAgent:
                 'recall': scores['recall']
             })
             
-            # Check if threshold met
             if f1_score >= self.target_score:
                 state['agent_notes'].append(
                     f"{self.emoji} {self.name}: ✅ BERTScore validated (F1={f1_score:.3f})"
@@ -1033,7 +1303,6 @@ class BERTScoreValidatorAgent:
                 state['final_translation'] = current_text
                 break
             
-            # Need refinement
             if attempt >= self.max_attempts:
                 state['agent_notes'].append(
                     f"{self.emoji} {self.name}: ⚠️ Max attempts reached (F1={f1_score:.3f} < {self.target_score})"
@@ -1041,7 +1310,6 @@ class BERTScoreValidatorAgent:
                 state['needs_human_review'] = True
                 break
             
-            # Request refinement
             state['agent_notes'].append(
                 f"{self.emoji} {self.name}: 🔄 Refining (F1={f1_score:.3f} < {self.target_score}, attempt {attempt}/{self.max_attempts})"
             )
@@ -1086,6 +1354,9 @@ class BERTScoreValidatorAgent:
                 break
         
         state['final_translation'] = current_text
+        
+        # INCREMENT INDEX
+        state['current_agent_index'] = state.get('current_agent_index', 0) + 1
         return state
 
 
@@ -1133,49 +1404,40 @@ def setup_langsmith(api_key: Optional[str], project_name: str = "translation-pip
 
 
 # =====================
-# Conditional Logic
-# =====================
-
-def should_get_human_feedback(state: TranslationState) -> str:
-    if state.get('needs_human_review', False):
-        return "human_review"
-    return "literary_polish"
-
-
-# =====================
-# Graph Construction
+# Graph Construction WITH DYNAMIC ROUTING
 # =====================
 
 def build_translation_graph(llm: BaseChatModel) -> StateGraph:
+    planning_agent = PlanningAgent(llm)
     literal_agent = LiteralTranslationAgent(llm)
     cultural_agent = CulturalAdaptationAgent(llm)
     tone_agent = ToneConsistencyAgent(llm)
     technical_agent = TechnicalReviewAgent(llm)
     literary_agent = LiteraryEditorAgent(llm)
     qc_agent = QualityControlAgent(llm)
-    bertscore_agent = BERTScoreValidatorAgent(llm)  # NEW
+    bertscore_agent = BERTScoreValidatorAgent(llm)
 
     workflow = StateGraph(TranslationState)
-    workflow.add_node("literal_translation", literal_agent.translate)
-    workflow.add_node("cultural_adaptation", cultural_agent.adapt)
-    workflow.add_node("tone_adjustment", tone_agent.adjust_tone)
-    workflow.add_node("technical_review", technical_agent.review)
-    workflow.add_node("literary_polish", literary_agent.polish)
+    
+    workflow.add_node("planning", planning_agent.analyze_and_plan)
+    workflow.add_node("literal_translator", literal_agent.translate)
+    workflow.add_node("cultural_adapter", cultural_agent.adapt)
+    workflow.add_node("tone_specialist", tone_agent.adjust_tone)
+    workflow.add_node("technical_reviewer", technical_agent.review)
+    workflow.add_node("literary_editor", literary_agent.polish)
     workflow.add_node("finalize", qc_agent.finalize)
-    workflow.add_node("bertscore_validation", bertscore_agent.validate_and_refine)  # NEW
-
-    workflow.set_entry_point("literal_translation")
-    workflow.add_edge("literal_translation", "cultural_adaptation")
-    workflow.add_edge("cultural_adaptation", "tone_adjustment")
-    workflow.add_edge("tone_adjustment", "technical_review")
-    workflow.add_conditional_edges(
-        "technical_review",
-        should_get_human_feedback,
-        {"human_review": END, "literary_polish": "literary_polish"}
-    )
-    workflow.add_edge("literary_polish", "finalize")
-    workflow.add_edge("finalize", "bertscore_validation")  # NEW
-    workflow.add_edge("bertscore_validation", END)  # NEW
+    workflow.add_node("bertscore_validator", bertscore_agent.validate_and_refine)
+    
+    workflow.set_entry_point("planning")
+    
+    workflow.add_conditional_edges("planning", route_to_next_agent)
+    workflow.add_conditional_edges("literal_translator", route_to_next_agent)
+    workflow.add_conditional_edges("cultural_adapter", route_to_next_agent)
+    workflow.add_conditional_edges("tone_specialist", route_to_next_agent)
+    workflow.add_conditional_edges("technical_reviewer", route_to_next_agent)
+    workflow.add_conditional_edges("literary_editor", route_to_next_agent)
+    workflow.add_conditional_edges("finalize", route_to_next_agent)
+    workflow.add_conditional_edges("bertscore_validator", route_to_next_agent)
 
     return workflow.compile()
 
@@ -1192,7 +1454,7 @@ def main():
         initial_sidebar_state="expanded"
     )
     
-    # Initialize session state FIRST (before any UI elements)
+    # Initialize session state
     if 'translation_state' not in st.session_state:
         st.session_state.translation_state = None
     if 'graph' not in st.session_state:
@@ -1202,13 +1464,27 @@ def main():
     if 'edited_translation' not in st.session_state:
         st.session_state.edited_translation = None
     
-    # Entity tracker initialization (NEW - must be before sidebar)
+    # Entity tracker initialization
     if 'entity_tracker' not in st.session_state:
         st.session_state.entity_tracker = EntitiesTracker()
     if 'enable_entity_tracking' not in st.session_state:
         st.session_state.enable_entity_tracking = False
     if 'enable_entity_awareness' not in st.session_state:
         st.session_state.enable_entity_awareness = False
+    
+    # Planning preferences
+    if 'planning_enabled' not in st.session_state:
+        st.session_state.planning_enabled = True
+    if 'force_cultural_adapter' not in st.session_state:
+        st.session_state.force_cultural_adapter = False
+    if 'force_tone_specialist' not in st.session_state:
+        st.session_state.force_tone_specialist = False
+    if 'force_technical_reviewer' not in st.session_state:
+        st.session_state.force_technical_reviewer = False
+    if 'force_literary_editor' not in st.session_state:
+        st.session_state.force_literary_editor = False
+    if 'force_bertscore_validator' not in st.session_state:
+        st.session_state.force_bertscore_validator = False
 
     # Custom CSS
     st.markdown("""
@@ -1227,13 +1503,20 @@ def main():
             margin: 10px 0;
             border-radius: 4px;
         }
+        .planning-card {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            padding: 15px;
+            border-radius: 8px;
+            color: white;
+            margin: 10px 0;
+        }
         .stTabs [data-baseweb="tab-list"] { gap: 24px; }
         .stTabs [data-baseweb="tab"] { padding: 10px 20px; }
     </style>
     """, unsafe_allow_html=True)
 
     st.title("🌐 Advanced Multi-Agent Translation System")
-    st.caption("Mode: auto-switches to **Refine** if Source ≈ Target (e.g., English → English).")
+    st.caption("🎯 **NEW**: Intelligent Planning Agent - Dynamically optimizes workflow for each task!")
 
     # Sidebar
     with st.sidebar:
@@ -1272,6 +1555,45 @@ def main():
         model = st.selectbox("Model", model_options, index=0)
         temperature = st.slider("Temperature", 0.0, 1.0, 0.3, help="Lower = more conservative, Higher = more creative")
 
+        st.divider()
+        
+        # Planning Controls
+        st.subheader("📋 Intelligent Planning")
+        st.session_state.planning_enabled = st.checkbox(
+            "Enable Smart Planning",
+            value=st.session_state.planning_enabled,
+            help="Let AI select optimal agents for each task"
+        )
+        
+        if not st.session_state.planning_enabled:
+            st.info("⚠️ Planning disabled - all agents will run")
+        else:
+            st.success("✅ Smart planning active - optimizing workflow")
+            
+            with st.expander("🎯 Manual Overrides", expanded=False):
+                st.caption("Force inclusion of specific agents:")
+                st.session_state.force_cultural_adapter = st.checkbox(
+                    "🌍 Force Cultural Adapter",
+                    value=st.session_state.force_cultural_adapter
+                )
+                st.session_state.force_tone_specialist = st.checkbox(
+                    "🎭 Force Tone Specialist",
+                    value=st.session_state.force_tone_specialist
+                )
+                st.session_state.force_technical_reviewer = st.checkbox(
+                    "🔬 Force Technical Reviewer",
+                    value=st.session_state.force_technical_reviewer
+                )
+                st.session_state.force_literary_editor = st.checkbox(
+                    "✍️ Force Literary Editor",
+                    value=st.session_state.force_literary_editor
+                )
+                st.session_state.force_bertscore_validator = st.checkbox(
+                    "🎯 Force BERTScore Validator",
+                    value=st.session_state.force_bertscore_validator,
+                    help="Only applies to same-language refinement"
+                )
+        
         st.divider()
         st.subheader("🌍 Translation Settings")
         source_lang = st.selectbox(
@@ -1312,7 +1634,7 @@ def main():
         st.divider()
         show_charts = st.checkbox("Show analytics visualizations", value=True)
         
-        # Entity Tracking Options (NEW)
+        # Entity Tracking Options
         st.divider()
         st.subheader("🎯 Entity Tracking")
         st.session_state.enable_entity_tracking = st.checkbox(
@@ -1328,7 +1650,6 @@ def main():
                 help="Give translation agents awareness of important entities"
             )
             
-            # Glossary upload
             uploaded_glossary = st.file_uploader(
                 "Upload Entity Glossary",
                 type=['json', 'csv', 'txt'],
@@ -1339,7 +1660,6 @@ def main():
                 if st.session_state.entity_tracker.upload_glossary(uploaded_glossary):
                     st.success(f"✅ Glossary loaded")
             
-            # Quick add term
             with st.expander("➕ Quick Add Term"):
                 new_term = st.text_input("Term name")
                 term_type = st.selectbox("Type", ["person", "location", "organization", "date", "custom"])
@@ -1360,8 +1680,8 @@ def main():
     st.header(f"📝 Interface · {mode_phrase(source_lang, target_lang)}")
 
     with st.expander("📚 Learn About Our Translation Agents", expanded=False):
-        st.markdown("### The Seven-Agent Pipeline")
-        for _, agent_info in AGENT_DESCRIPTIONS.items():
+        st.markdown("### The Eight-Agent Pipeline (with Intelligent Planning)")
+        for agent_key, agent_info in AGENT_DESCRIPTIONS.items():
             st.markdown(f"""
             <div class="agent-card">
                 <h3>{agent_info['emoji']} {agent_info['name']}</h3>
@@ -1455,10 +1775,16 @@ def main():
                     "bertscore_attempts": 0,
                     "bertscore_history": [],
                     "started_at": current_time,
-                    "completed_at": None
+                    "completed_at": None,
+                    "agent_plan": [],
+                    "agent_plan_reasoning": {},
+                    "planning_analysis": {},
+                    "skipped_agents": [],
+                    "estimated_complexity": "unknown",
+                    "current_agent_index": 0,
+                    "planning_enabled": st.session_state.planning_enabled
                 }
                 
-                # Add entity fields if tracking is enabled (NEW)
                 if st.session_state.enable_entity_tracking:
                     entity_tracker = st.session_state.entity_tracker
                     source_entities = entity_tracker.extract_entities(source_text)
@@ -1473,20 +1799,10 @@ def main():
                     initial_state['translated_entities'] = None
                     initial_state['entity_preservation_rate'] = None
 
-                stages = [
-                    ("🔤 Baseline pass", 0.14),
-                    ("🌍 Cultural/Register adaptation", 0.29),
-                    ("🎭 Tone consistency", 0.43),
-                    ("🔬 Technical review", 0.57),
-                    ("✍️ Literary polish", 0.71),
-                    ("✅ Finalize", 0.86),
-                    ("🎯 Semantic validation", 1.0)  # NEW
-                ]
-                for stage_name, progress_val in stages:
-                    with status_container.container():
-                        st.info(f"🔄 {stage_name}...")
-                    with progress_container.container():
-                        st.progress(progress_val)
+                with status_container.container():
+                    st.info("🔄 Planning workflow...")
+                with progress_container.container():
+                    st.progress(0.05)
 
                 with status_container.container():
                     st.info("🔄 Running agents...")
@@ -1513,6 +1829,42 @@ def main():
 
         if st.session_state.translation_state:
             state = st.session_state.translation_state
+            
+            # Display planning information
+            if state.get('agent_plan'):
+                st.markdown("### 📋 Execution Plan")
+                
+                plan = state.get('agent_plan', [])
+                skipped = state.get('skipped_agents', [])
+                complexity = state.get('estimated_complexity', 'unknown')
+                
+                agent_names = {
+                    'literal_translator': '🔤 Baseline',
+                    'cultural_adapter': '🌍 Cultural',
+                    'tone_specialist': '🎭 Tone',
+                    'technical_reviewer': '🔬 Technical',
+                    'literary_editor': '✍️ Literary',
+                    'finalize': '✅ Finalize',
+                    'bertscore_validator': '🎯 BERTScore'
+                }
+                
+                col_info1, col_info2, col_info3 = st.columns(3)
+                with col_info1:
+                    st.metric("Agents Used", f"{len(plan)}/7")
+                with col_info2:
+                    savings = int((1 - len(plan) / 7) * 100)
+                    st.metric("Efficiency", f"{savings}%")
+                with col_info3:
+                    st.metric("Complexity", complexity.title())
+                
+                route_display = " → ".join([agent_names.get(a, a) for a in plan])
+                st.info(f"**Route:** {route_display}")
+                
+                if skipped:
+                    skipped_display = ", ".join([agent_names.get(a, a) for a in skipped])
+                    st.caption(f"⏭️ **Skipped:** {skipped_display}")
+            
+            st.divider()
             st.markdown("### 📖 Final Output")
             display_text = st.session_state.edited_translation or state.get('final_translation', 'No output yet')
 
@@ -1561,24 +1913,61 @@ def main():
         st.header("🔍 Detailed Analysis")
         state = st.session_state.translation_state
 
-        # Build tabs list dynamically
         tab_names = [
-            "✏️ Edit & Review","🔄 Agent Workflow","📊 All Versions",
+            "📋 Planning","✏️ Edit & Review","🔄 Agent Workflow","📊 All Versions",
             "⚠️ Issues & Feedback","📈 Analytics","📚 History"
         ]
         
-        # Add entity tab if enabled
         if st.session_state.enable_entity_tracking:
             tab_names.append("🎯 Entities")
         
-        # Create tabs
         tabs = st.tabs(tab_names)
         
-        # Original tabs
-        tab1, tab2, tab3, tab4, tab5, tab6 = tabs[:6]
+        if len(tabs) == 8:
+            tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7 = tabs
+        else:
+            tab0, tab1, tab2, tab3, tab4, tab5, tab6 = tabs
+            tab7 = None
         
-        # Entity tab if enabled
-        tab7 = tabs[6] if len(tabs) > 6 else None
+        # Planning Tab
+        with tab0:
+            st.subheader("Planning Analysis & Decisions")
+            
+            if state.get('agent_plan'):
+                reasoning = state.get('agent_plan_reasoning', {})
+                analysis = state.get('planning_analysis', {})
+                
+                st.markdown("#### 📊 Text Analysis")
+                if analysis:
+                    cols = st.columns(3)
+                    if 'length' in analysis:
+                        cols[0].metric("Length", f"{analysis['length']} words")
+                    if 'complexity_score' in analysis:
+                        cols[1].metric("Complexity", f"{analysis.get('complexity_score', 0):.1f}/10")
+                    if 'technical_terms_count' in analysis:
+                        cols[2].metric("Technical Terms", analysis.get('technical_terms_count', 0))
+                    
+                    cols2 = st.columns(3)
+                    if 'cultural_references_count' in analysis:
+                        cols2[0].metric("Cultural Refs", analysis.get('cultural_references_count', 0))
+                    if 'tone_consistency' in analysis:
+                        cols2[1].metric("Tone", analysis.get('tone_consistency', 'N/A'))
+                    if 'literary_elements' in analysis:
+                        cols2[2].metric("Literary", analysis.get('literary_elements', 'N/A'))
+                
+                st.divider()
+                st.markdown("#### 🎯 Agent Selection Reasoning")
+                
+                for agent_key in ['literal_translator', 'cultural_adapter', 'tone_specialist', 
+                                 'technical_reviewer', 'literary_editor', 'finalize', 'bertscore_validator']:
+                    if agent_key in reasoning:
+                        reason = reasoning[agent_key]
+                        if reason.startswith('✅'):
+                            st.success(f"**{agent_key.replace('_', ' ').title()}:** {reason}")
+                        else:
+                            st.info(f"**{agent_key.replace('_', ' ').title()}:** {reason}")
+            else:
+                st.info("Planning information not available")
 
         with tab1:
             st.subheader("Edit & Review")
@@ -1658,9 +2047,9 @@ def main():
                 ("6️⃣ Final", state.get('final_translation','')),
             ]
             for title, content in versions:
-                with st.expander(title, expanded=False):
-                    # FIX: non-empty label + hide it
-                    st.text_area(f"{title} content", content, height=200, key=f"version_{title}", label_visibility="collapsed")
+                if content:
+                    with st.expander(title, expanded=False):
+                        st.text_area(f"{title} content", content, height=200, key=f"version_{title}", label_visibility="collapsed")
 
         with tab4:
             st.subheader("Issues & Feedback")
@@ -1686,7 +2075,6 @@ def main():
         with tab5:
             st.subheader("Analytics")
 
-            # Quick metrics
             col_a, col_b, col_c = st.columns(3)
             with col_a:
                 source_words = len(state['source_text'].split())
@@ -1701,7 +2089,6 @@ def main():
             if show_charts:
                 st.divider()
 
-                # ---------- Visuals: Source vs Final word count ----------
                 with st.expander("Word Count Overview", expanded=True):
                     try:
                         df_counts = pd.DataFrame(
@@ -1713,7 +2100,6 @@ def main():
 
                 st.divider()
 
-                # ---------- Visuals: Sentence length distributions ----------
                 with st.expander("Sentence Length Distribution (words per sentence)", expanded=False):
                     src_lens = sentence_lengths(state.get('source_text', ''))
                     fin_lens = sentence_lengths(state.get('final_translation', ''))
@@ -1747,12 +2133,10 @@ def main():
 
                 st.divider()
 
-                # ---------- New: Word Clouds (Source, Final, Added Words) ----------
                 with st.expander("Word Clouds (Before / After / Difference)", expanded=True):
                     if not WORDCLOUD_AVAILABLE:
                         st.info("Install `wordcloud` to enable this: `pip install wordcloud`")
                     else:
-                        # Build stopword set: wordcloud's STOPWORDS plus a few common extras
                         sw = set(STOPWORDS) | {"—", "–", "'", """, """, "…"}
 
                         src_text = state.get('source_text', '')
@@ -1760,7 +2144,6 @@ def main():
                         src_freq = word_frequencies(src_text, stopwords=sw)
                         fin_freq = word_frequencies(fin_text, stopwords=sw)
 
-                        # Difference: positive deltas (words added or increased)
                         diff_freq = {}
                         for w, f_cnt in fin_freq.items():
                             s_cnt = src_freq.get(w, 0)
@@ -1768,8 +2151,6 @@ def main():
                             if delta > 0:
                                 diff_freq[w] = delta
 
-                        cols_wc = st.columns(1)
-                        # To keep layout simple, stack them vertically for readability
                         st.caption("Before (Source)")
                         try:
                             render_wordcloud_from_freq(src_freq, "Source Word Cloud")
@@ -1790,7 +2171,6 @@ def main():
 
                 st.divider()
 
-                # ---------- Optional readability (textstat) ----------
                 with st.expander("Readability (Flesch Reading Ease)", expanded=False):
                     try:
                         import textstat
@@ -1804,7 +2184,6 @@ def main():
 
                 st.divider()
 
-                # ---------- BERTScore bars (only for same-language refine runs) ----------
                 if languages_equivalent(state['source_language'], state['target_language']):
                     with st.expander("BERTScore (same-language refine mode)", expanded=True):
                         if not BERT_AVAILABLE:
@@ -1829,7 +2208,6 @@ def main():
                             else:
                                 st.info("Provide both source and final text to compute BERTScore.")
                         
-                        # BERTScore refinement history (NEW)
                         if state.get('bertscore_history'):
                             st.divider()
                             st.markdown("#### 🎯 BERTScore Refinement History")
@@ -1858,7 +2236,6 @@ def main():
 
                 st.divider()
 
-                # ---------- Issue counts by stage ----------
                 with st.expander("Issues by Stage", expanded=False):
                     issue_counts = {
                         "Literal": len(state.get('literal_issues', [])),
@@ -1892,7 +2269,7 @@ def main():
             else:
                 st.info("No history yet")
         
-        # Entity Tab (NEW - only if enabled)
+        # Entity Tab (only if enabled)
         if st.session_state.enable_entity_tracking and tab7:
             with tab7:
                 st.subheader("🎯 Entity Analysis & Tracking")
@@ -1900,13 +2277,11 @@ def main():
                 if state:
                     entity_tracker = st.session_state.entity_tracker
                     
-                    # Extract entities if not already done
                     if 'source_entities' not in state or state['source_entities'] is None:
                         state['source_entities'] = entity_tracker.extract_entities(state.get('source_text', ''))
                     if 'translated_entities' not in state or state['translated_entities'] is None:
                         state['translated_entities'] = entity_tracker.extract_entities(state.get('final_translation', ''))
                     
-                    # Entity comparison
                     col1, col2 = st.columns(2)
                     
                     with col1:
@@ -1916,7 +2291,6 @@ def main():
                         if source_entities:
                             st.metric("Total Entities", len(source_entities))
                             
-                            # Group by type
                             entity_types = {}
                             for entity in source_entities:
                                 if entity['type'] not in entity_types:
@@ -1941,7 +2315,6 @@ def main():
                         if translated_entities:
                             st.metric("Total Entities", len(translated_entities))
                             
-                            # Group by type
                             entity_types = {}
                             for entity in translated_entities:
                                 if entity['type'] not in entity_types:
@@ -1959,7 +2332,6 @@ def main():
                         else:
                             st.info("No entities detected in translation")
                     
-                    # Preservation analysis
                     if source_entities and translated_entities:
                         st.divider()
                         st.markdown("### 📊 Entity Preservation Analysis")
@@ -1986,7 +2358,6 @@ def main():
                         with col4:
                             st.metric("Added", len(added))
                         
-                        # Details
                         if lost:
                             with st.expander(f"⚠️ Lost Entities ({len(lost)})", expanded=len(lost) <= 5):
                                 for name in list(lost)[:30]:
@@ -2003,7 +2374,6 @@ def main():
                                         emoji = entity_tracker.entity_types[entity['type']]['emoji']
                                         st.write(f"{emoji} {entity['name']}")
                         
-                        # Network visualization
                         st.divider()
                         st.markdown("### 🌐 Entity Network Visualization")
                         
@@ -2018,7 +2388,6 @@ def main():
                         elif viz_choice == "Translated Entities":
                             viz_entities = translated_entities[:30]
                         else:
-                            # Combine but limit total
                             all_entities = {}
                             for e in source_entities + translated_entities:
                                 if e['name'] not in all_entities:
@@ -2028,12 +2397,10 @@ def main():
                         if viz_entities:
                             entity_tracker.visualize_network(viz_entities)
                         
-                        # Comparison chart
                         if PLOTLY_AVAILABLE:
                             st.divider()
                             st.markdown("### 📈 Entity Frequency Comparison")
                             
-                            # Create comparison data
                             all_entity_names = {}
                             for e in source_entities:
                                 all_entity_names[e['name']] = {'source': e['count'], 'translated': 0, 'type': e['type']}
@@ -2043,7 +2410,6 @@ def main():
                                 else:
                                     all_entity_names[e['name']] = {'source': 0, 'translated': e['count'], 'type': e['type']}
                             
-                            # Sort by total count and take top 20
                             sorted_entities = sorted(all_entity_names.items(), 
                                                    key=lambda x: x[1]['source'] + x[1]['translated'], 
                                                    reverse=True)[:20]
@@ -2059,7 +2425,6 @@ def main():
                                 
                                 df = pd.DataFrame(df_data)
                                 
-                                # Create grouped bar chart
                                 fig = go.Figure()
                                 fig.add_trace(go.Bar(
                                     name='Source',
