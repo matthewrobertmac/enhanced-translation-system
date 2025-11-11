@@ -1,7 +1,6 @@
 """
 Enhanced Multi-Agent Translation Workflow with LangGraph and LangSmith
 A sophisticated translation system with cultural adaptation, literary editing, comprehensive monitoring, and visuals.
-
 Features:
 - INTELLIGENT PLANNING AGENT - dynamically selects required agents
 - 7 specialized translation agents with distinct roles (including BERTScore validator)
@@ -17,7 +16,6 @@ Features:
 - Word clouds: Source, Final, and Difference (words added)
 - Entity tracking and network visualization
 """
-
 import streamlit as st
 from typing import TypedDict, Annotated, List, Dict, Optional, Literal
 from langgraph.graph import StateGraph, END
@@ -31,33 +29,30 @@ import io
 import traceback
 import re
 import collections
-
+import difflib
+import asyncio
 # === New: viz imports ===
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-
 # === New: wordcloud (optional) ===
 try:
     from wordcloud import WordCloud, STOPWORDS
     WORDCLOUD_AVAILABLE = True
 except Exception:
     WORDCLOUD_AVAILABLE = False
-
 # === Entity tracking imports ===
 try:
     import networkx as nx
     NETWORKX_AVAILABLE = True
 except ImportError:
     NETWORKX_AVAILABLE = False
-
 try:
     import plotly.express as px
     import plotly.graph_objects as go
     PLOTLY_AVAILABLE = True
 except ImportError:
     PLOTLY_AVAILABLE = False
-
 # ===== Language Guardrail =====
 LANGUAGE_GUARDRAIL = (
     "STRICT LANGUAGE GUARDRAIL:\n"
@@ -65,16 +60,14 @@ LANGUAGE_GUARDRAIL = (
     "- Do NOT include any words or phrases in other languages.\n"
     "- Any notes, bullets, or headings must also be in the target language.\n"
 )
-
 # =====================
 # ENTITY TRACKER CLASS
 # =====================
 import csv
 from collections import Counter, defaultdict
-
 class EntitiesTracker:
     """Entity tracking and visualization system with network graphs"""
-    
+   
     def __init__(self):
         self.entity_types = {
             'person': {'emoji': '👤', 'color': '#3b82f6'},
@@ -83,34 +76,34 @@ class EntitiesTracker:
             'date': {'emoji': '📅', 'color': '#8b5cf6'},
             'custom': {'emoji': '🏷️', 'color': '#ef4444'}
         }
-        
+       
         if 'entity_glossary' not in st.session_state:
             st.session_state.entity_glossary = {}
-        
+       
         if 'extracted_entities' not in st.session_state:
             st.session_state.extracted_entities = []
-    
+   
     def extract_entities(self, text: str) -> List[Dict]:
         """Extract entities from text using glossary and NER patterns"""
         if not text:
             return []
-        
+       
         entities = []
-        
+       
         # Extract from glossary
         for term, info in st.session_state.entity_glossary.items():
             pattern = re.compile(r'\b' + re.escape(term) + r'\b', re.IGNORECASE)
             matches = pattern.findall(text)
-            
+           
             # Check aliases
             alias_count = 0
             for alias in info.get('aliases', []):
                 alias_pattern = re.compile(r'\b' + re.escape(alias) + r'\b', re.IGNORECASE)
                 alias_matches = alias_pattern.findall(text)
                 alias_count += len(alias_matches)
-            
+           
             total_count = len(matches) + alias_count
-            
+           
             if total_count > 0:
                 entities.append({
                     'name': term,
@@ -119,7 +112,7 @@ class EntitiesTracker:
                     'description': info.get('description', ''),
                     'from_glossary': True
                 })
-        
+       
         # Auto-detection patterns
         # Person names
         person_pattern = r'\b([A-Z][a-z]+ [A-Z][a-z]+)\b'
@@ -134,7 +127,7 @@ class EntitiesTracker:
                     'description': 'Auto-detected',
                     'auto_detected': True
                 })
-        
+       
         # Organizations
         org_pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:Inc|Corp|LLC|Ltd|Company|Group|Foundation))\b'
         for match in re.finditer(org_pattern, text):
@@ -148,14 +141,14 @@ class EntitiesTracker:
                     'description': 'Auto-detected',
                     'auto_detected': True
                 })
-        
+       
         return entities
-    
+   
     def upload_glossary(self, file) -> bool:
         """Process uploaded glossary file"""
         try:
             content = file.read()
-            
+           
             if file.name.endswith('.json'):
                 new_glossary = json.loads(content)
             elif file.name.endswith('.csv'):
@@ -177,38 +170,38 @@ class EntitiesTracker:
                     term = line.strip()
                     if term:
                         new_glossary[term] = {'type': 'custom', 'description': '', 'aliases': []}
-            
+           
             st.session_state.entity_glossary.update(new_glossary)
             return True
         except Exception as e:
             st.error(f"Error processing glossary: {str(e)}")
             return False
-    
+   
     def visualize_network(self, entities: List[Dict]):
         """Create network visualization using plotly"""
         if not NETWORKX_AVAILABLE or not PLOTLY_AVAILABLE:
             st.warning("Install networkx and plotly for network visualization")
             return
-        
+       
         # Create graph
         G = nx.Graph()
-        
+       
         # Add nodes
         for entity in entities:
-            G.add_node(entity['name'], 
+            G.add_node(entity['name'],
                       type=entity['type'],
                       count=entity['count'],
                       description=entity.get('description', ''))
-        
+       
         # Add edges (simplified co-occurrence)
         for i, e1 in enumerate(entities):
             for e2 in entities[i+1:]:
                 weight = min(e1['count'], e2['count'])
                 G.add_edge(e1['name'], e2['name'], weight=weight)
-        
+       
         # Create layout
         pos = nx.spring_layout(G, k=2, iterations=50)
-        
+       
         # Create edge traces
         edge_traces = []
         for edge in G.edges(data=True):
@@ -219,24 +212,24 @@ class EntitiesTracker:
                              line=dict(width=0.5, color='#888'),
                              hoverinfo='none')
             edge_traces.append(trace)
-        
+       
         # Create node trace
         node_x = []
         node_y = []
         node_text = []
         node_color = []
         node_size = []
-        
+       
         for node in G.nodes():
             x, y = pos[node]
             node_x.append(x)
             node_y.append(y)
-            
+           
             entity = next(e for e in entities if e['name'] == node)
             node_text.append(f"{node}<br>Type: {entity['type']}<br>Count: {entity['count']}")
             node_color.append(self.entity_types[entity['type']]['color'])
             node_size.append(10 + min(entity['count'] * 3, 50))
-        
+       
         node_trace = go.Scatter(
             x=node_x, y=node_y,
             mode='markers+text',
@@ -250,7 +243,7 @@ class EntitiesTracker:
                 line=dict(width=2, color='white')
             )
         )
-        
+       
         # Create figure
         fig = go.Figure(data=edge_traces + [node_trace],
                        layout=go.Layout(
@@ -262,24 +255,20 @@ class EntitiesTracker:
                            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
                            height=600
                        ))
-        
+       
         st.plotly_chart(fig, use_container_width=True)
-
 # ---- Helpers for same-language paths ----
 def normalize_lang_label(label: str) -> str:
     """Normalize a language label like 'English (US)' -> 'english'."""
     core = label.split("(")[0].strip().lower()
     return core
-
 def languages_equivalent(src: str, tgt: str) -> bool:
     return normalize_lang_label(src) == normalize_lang_label(tgt)
-
 def mode_phrase(src: str, tgt: str) -> str:
     """Human-readable short descriptor for UI headers."""
     if languages_equivalent(src, tgt):
         return f"{tgt} – refine"
     return f"{src} → {tgt}"
-
 def split_notes(content: str, labels: List[str]) -> (str, Optional[str], Optional[str]):
     """
     Split content on the first matching label in labels list (e.g., ["TRANSLATOR NOTES:", "EDITOR NOTES:"]).
@@ -290,27 +279,23 @@ def split_notes(content: str, labels: List[str]) -> (str, Optional[str], Optiona
             parts = content.split(lab, 1)
             return parts[0].strip(), lab, parts[1].strip()
     return content.strip(), None, None
-
 # LangSmith integration (optional)
 try:
     from langsmith import Client
     LANGSMITH_AVAILABLE = True
 except ImportError:
     LANGSMITH_AVAILABLE = False
-
 # Model imports
 try:
     from langchain_openai import ChatOpenAI
     OPENAI_AVAILABLE = True
 except ImportError:
     OPENAI_AVAILABLE = False
-
 try:
     from langchain_anthropic import ChatAnthropic
     ANTHROPIC_AVAILABLE = True
 except ImportError:
     ANTHROPIC_AVAILABLE = False
-
 # Document processing
 try:
     from docx import Document
@@ -319,15 +304,18 @@ try:
     DOCX_AVAILABLE = True
 except ImportError:
     DOCX_AVAILABLE = False
-
 # BERTScore (optional; only used in same-language mode)
 try:
     from bert_score import score as bert_score_fn
     BERT_AVAILABLE = True
 except Exception:
     BERT_AVAILABLE = False
-
-
+# Checkpointer
+from langgraph.checkpoint.memory import MemorySaver
+# Caching
+from langchain_core.caches import InMemoryCache
+from langchain_core.globals import set_llm_cache
+set_llm_cache(InMemoryCache())
 # =====================
 # AGENT ROLE DESCRIPTIONS
 # =====================
@@ -338,7 +326,6 @@ AGENT_DESCRIPTIONS = {
         "role": "Intelligent Agent Selection & Routing",
         "description": """
         **Primary Responsibility:** Analyze source text and dynamically determine which agents are needed.
-
         **Key Functions:**
         - Assess text complexity and characteristics
         - Detect technical, cultural, and literary elements
@@ -356,7 +343,6 @@ AGENT_DESCRIPTIONS = {
         **Primary Responsibility:** Provides the baseline pass:
         - Translation mode: create an accurate word-for-word draft.
         - Refine mode (same-language): perform a faithful copy-edit that preserves meaning and structure.
-
         **Key Functions:**
         - Preserve semantic content and important structure
         - Identify idioms, ambiguities, cultural expressions
@@ -412,8 +398,6 @@ AGENT_DESCRIPTIONS = {
         - Only active when source and target languages are equivalent
         - Validates BERTScore ≥ 0.8 for semantic preservation
         - Iteratively refines output to meet threshold
-        - Maximum 3 refinement attempts
-
         **Key Functions:**
         - Compute BERTScore (P/R/F1) against source
         - Identify semantic drift areas
@@ -423,8 +407,6 @@ AGENT_DESCRIPTIONS = {
         "expertise": ["Semantic analysis", "Embedding comparison", "Iterative refinement", "Fidelity validation"]
     }
 }
-
-
 # =====================
 # State Definition (UPDATED WITH PLANNING FIELDS)
 # =====================
@@ -434,7 +416,6 @@ class TranslationState(TypedDict):
     target_language: str
     target_audience: str
     genre: str
-
     # Versions
     literal_translation: str
     cultural_adaptation: str
@@ -442,33 +423,27 @@ class TranslationState(TypedDict):
     technical_review_version: str
     literary_polish: str
     final_translation: str
-
     # Issues
     literal_issues: List[Dict]
     cultural_issues: List[Dict]
     tone_issues: List[Dict]
     technical_issues: List[Dict]
     literary_issues: List[Dict]
-
     # Critical passages
     critical_passages: List[Dict]
-
     # Workflow tracking
     agent_notes: Annotated[List[str], operator.add]
     agent_decisions: List[Dict]
     human_feedback: Optional[str]
     revision_count: int
     needs_human_review: bool
-
     # Entity tracking (Optional)
     source_entities: Optional[List[Dict]]
     translated_entities: Optional[List[Dict]]
     entity_preservation_rate: Optional[float]
-
     # BERTScore tracking
     bertscore_attempts: int
     bertscore_history: List[Dict]
-
     # Planning fields
     agent_plan: List[str]
     agent_plan_reasoning: Dict[str, str]
@@ -477,16 +452,12 @@ class TranslationState(TypedDict):
     estimated_complexity: str
     current_agent_index: int
     planning_enabled: bool
-
     # Metadata
     started_at: str
     completed_at: Optional[str]
-
-
 # =====================
 # File Processing Utilities
 # =====================
-
 def read_uploaded_file(uploaded_file) -> str:
     """Read content from uploaded file"""
     try:
@@ -505,22 +476,17 @@ def read_uploaded_file(uploaded_file) -> str:
     except Exception as e:
         st.error(f"Error reading file: {str(e)}")
         return ""
-
-
 def create_docx_file(text: str, title: str = "Translation") -> io.BytesIO:
     """Create a formatted Word document"""
     if not DOCX_AVAILABLE:
         st.error("python-docx not installed. Install with: pip install python-docx")
         return None
-
     doc = Document()
     title_paragraph = doc.add_heading(title, level=1)
     title_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
     timestamp = doc.add_paragraph()
     timestamp.add_run(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}").italic = True
     timestamp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
     doc.add_paragraph()
     for para in text.split('\n\n'):
         if para.strip():
@@ -529,24 +495,16 @@ def create_docx_file(text: str, title: str = "Translation") -> io.BytesIO:
             for run in p.runs:
                 run.font.name = 'Calibri'
                 run.font.size = Pt(11)
-
     file_stream = io.BytesIO()
     doc.save(file_stream)
     file_stream.seek(0)
     return file_stream
-
-
 def create_markdown_file(text: str, title: str = "Translation") -> str:
     return f"""# {title}
-
 **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
 ---
-
 {text}
 """
-
-
 def extract_critical_passages(text: str, issues_list: List[Dict]) -> List[Dict]:
     """Extract critical passages that need review based on agent feedback"""
     critical = []
@@ -566,28 +524,22 @@ def extract_critical_passages(text: str, issues_list: List[Dict]) -> List[Dict]:
                         'sentence_index': i
                     })
     return critical[:10]
-
-
 # =====================
 # Optional: Language Reinforcement
 # =====================
-
-def reinforce_language(llm: BaseChatModel, text: str, target_language: str) -> str:
+async def reinforce_language(llm: BaseChatModel, text: str, target_language: str) -> str:
     """Lightweight fixer to ensure output remains in the target language only."""
     try:
-        resp = llm.invoke([
+        resp = await llm.ainvoke([
             SystemMessage(content="Ensure the following text is in the specified language only, without code-switching."),
             HumanMessage(content=f"{LANGUAGE_GUARDRAIL}\n\nTarget language: {target_language}\n\nText:\n{text}\n\nReturn the corrected text in {target_language}, with no extra commentary.")
         ])
         return resp.content.strip()
     except Exception:
         return text
-
-
 # =====================
 # BERTScore Utility (same-language only)
 # =====================
-
 def compute_bertscore(candidate: str, reference: str) -> Optional[Dict[str, float]]:
     """Compute BERTScore (P/R/F1) if package is available; returns None otherwise."""
     if not BERT_AVAILABLE:
@@ -601,39 +553,31 @@ def compute_bertscore(candidate: str, reference: str) -> Optional[Dict[str, floa
         }
     except Exception:
         return None
-
-
 # =====================
 # Visualization helpers
 # =====================
-
 def sentence_lengths(text: str) -> List[int]:
     """Return per-sentence word counts for a text."""
     if not text:
         return []
     sentences = re.split(r'(?<=[.!?])\s+', text.strip())
     return [len(s.split()) for s in sentences if s.strip()]
-
 def nonzero_bins(max_len: int) -> List[int]:
     """Nice 5-word bins for histograms."""
     step = 5
     upper = max(5, ((max_len + step - 1) // step) * step)
     return list(range(0, upper + step, step))
-
 _WORD_RE = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ']+")
-
 def tokenize_words(text: str) -> List[str]:
     if not text:
         return []
     return [w.lower() for w in _WORD_RE.findall(text)]
-
 def word_frequencies(text: str, stopwords: Optional[set] = None) -> Dict[str, int]:
     tokens = tokenize_words(text)
     if stopwords is None:
         stopwords = set()
     cnt = collections.Counter(w for w in tokens if w not in stopwords and len(w) > 1)
     return dict(cnt)
-
 def render_wordcloud_from_freq(freqs: Dict[str, int], title: str):
     if not freqs:
         st.info(f"No tokens to display for **{title}**.")
@@ -649,59 +593,63 @@ def render_wordcloud_from_freq(freqs: Dict[str, int], title: str):
     ax.axis("off")
     ax.set_title(title)
     st.pyplot(fig)
-
-
+def text_similarity(a: str, b: str) -> float:
+    return difflib.SequenceMatcher(None, a or "", b or "").ratio()
 # =====================
 # PLANNING AGENT
 # =====================
-
 class PlanningAgent:
     def __init__(self, llm: BaseChatModel):
         self.llm = llm
         self.name = "Workflow Planning Specialist"
         self.emoji = "📋"
-    
-    def analyze_and_plan(self, state: TranslationState) -> TranslationState:
+   
+    async def analyze_and_plan(self, state: TranslationState) -> TranslationState:
         """Analyze text and create execution plan"""
-        
-        # Check if planning is disabled (manual override)
-        if not state.get('planning_enabled', True):
-            state['agent_plan'] = [
-                'literal_translator', 'cultural_adapter', 'tone_specialist',
-                'technical_reviewer', 'literary_editor', 'finalize', 'bertscore_validator'
-            ]
-            state['agent_plan_reasoning'] = {
-                'literal_translator': '✅ Required - baseline',
-                'cultural_adapter': '✅ Included - planning disabled',
-                'tone_specialist': '✅ Included - planning disabled',
-                'technical_reviewer': '✅ Included - planning disabled',
-                'literary_editor': '✅ Included - planning disabled',
-                'finalize': '✅ Required - final review',
-                'bertscore_validator': '✅ Included - planning disabled'
-            }
-            state['skipped_agents'] = []
-            state['estimated_complexity'] = 'full'
-            state['current_agent_index'] = 0
-            state['planning_analysis'] = {'mode': 'manual_override'}
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Planning disabled - running all agents")
+        if state.get('agent_plan'):
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Plan already exists - skipping")
             return state
-        
-        source_text = state['source_text']
-        source_lang = state['source_language']
-        target_lang = state['target_language']
-        audience = state['target_audience']
-        genre = state.get('genre', 'General')
-        same_lang = languages_equivalent(source_lang, target_lang)
-        
-        # Check for manual overrides from session state
-        force_cultural = st.session_state.get('force_cultural_adapter', False)
-        force_tone = st.session_state.get('force_tone_specialist', False)
-        force_technical = st.session_state.get('force_technical_reviewer', False)
-        force_literary = st.session_state.get('force_literary_editor', False)
-        force_bertscore = st.session_state.get('force_bertscore_validator', False)
-        
-        system_prompt = f"""You are an expert translation workflow planner. Analyze the source text and determine which translation agents are needed.
-
+        attempt = 0
+        max_attempts = 2
+        while attempt < max_attempts:
+            try:
+                # Check if planning is disabled (manual override)
+                if not state.get('planning_enabled', True):
+                    state['agent_plan'] = [
+                        'literal_translator', 'cultural_adapter', 'tone_specialist',
+                        'technical_reviewer', 'literary_editor', 'finalize', 'bertscore_validator'
+                    ]
+                    state['agent_plan_reasoning'] = {
+                        'literal_translator': '✅ Required - baseline',
+                        'cultural_adapter': '✅ Included - planning disabled',
+                        'tone_specialist': '✅ Included - planning disabled',
+                        'technical_reviewer': '✅ Included - planning disabled',
+                        'literary_editor': '✅ Included - planning disabled',
+                        'finalize': '✅ Required - final review',
+                        'bertscore_validator': '✅ Included - planning disabled'
+                    }
+                    state['skipped_agents'] = []
+                    state['estimated_complexity'] = 'full'
+                    state['current_agent_index'] = 0
+                    state['planning_analysis'] = {'mode': 'manual_override'}
+                    state['agent_notes'].append(f"{self.emoji} {self.name}: Planning disabled - running all agents")
+                    break
+                
+                source_text = state['source_text']
+                source_lang = state['source_language']
+                target_lang = state['target_language']
+                audience = state['target_audience']
+                genre = state.get('genre', 'General')
+                same_lang = languages_equivalent(source_lang, target_lang)
+               
+                # Check for manual overrides from session state
+                force_cultural = st.session_state.get('force_cultural_adapter', False)
+                force_tone = st.session_state.get('force_tone_specialist', False)
+                force_technical = st.session_state.get('force_technical_reviewer', False)
+                force_literary = st.session_state.get('force_literary_editor', False)
+                force_bertscore = st.session_state.get('force_bertscore_validator', False)
+               
+                system_prompt = f"""You are an expert translation workflow planner. Analyze the source text and determine which translation agents are needed.
 AVAILABLE AGENTS:
 1. literal_translator (ALWAYS REQUIRED) - Creates initial translation/refinement
 2. cultural_adapter - Handles idioms, cultural references, localization
@@ -710,14 +658,12 @@ AVAILABLE AGENTS:
 5. literary_editor - Elevates prose quality for publication
 6. finalize (ALWAYS REQUIRED) - Final quality synthesis
 7. bertscore_validator - Semantic fidelity validation (same-language only)
-
 ANALYSIS CRITERIA:
 - Text length: {len(source_text)} characters, ~{len(source_text.split())} words
 - Language pair: {source_lang} → {target_lang} (same-language: {same_lang})
 - Target audience: {audience}
 - Genre: {genre}
 - Look for: technical terms, cultural references, idioms, literary elements, tone consistency issues
-
 SELECTION GUIDELINES:
 - literal_translator & finalize: ALWAYS include
 - cultural_adapter: Include if cross-language OR idioms/cultural content OR same-lang with register differences
@@ -725,9 +671,7 @@ SELECTION GUIDELINES:
 - technical_reviewer: Include if technical terminology, formulas, units, citations present
 - literary_editor: Include if literary genre OR narrative elements OR high-polish audience
 - bertscore_validator: ONLY if same-language mode AND available
-
 EFFICIENCY GOAL: Include only agents that will meaningfully improve output. When uncertain, include the agent (favor quality over speed).
-
 OUTPUT FORMAT: Return ONLY valid JSON (no markdown, no backticks):
 {{
     "required_agents": ["literal_translator", "cultural_adapter", "finalize"],
@@ -751,543 +695,564 @@ OUTPUT FORMAT: Return ONLY valid JSON (no markdown, no backticks):
     "estimated_complexity": "simple"
 }}
 """
-
-        user_prompt = f"""Analyze this text and create an optimal translation workflow plan:
-
+                user_prompt = f"""Analyze this text and create an optimal translation workflow plan:
 SOURCE TEXT:
 {source_text[:2000]}{'...' if len(source_text) > 2000 else ''}
-
 Return ONLY the JSON plan, no other text."""
-
-        try:
-            response = self.llm.invoke([
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_prompt)
-            ])
-            
-            content = response.content.strip()
-            content = re.sub(r'```json\s*', '', content)
-            content = re.sub(r'```\s*$', '', content)
-            
-            plan_data = json.loads(content)
-            
-            required_agents = plan_data.get('required_agents', [])
-            reasoning = plan_data.get('reasoning', {})
-            analysis = plan_data.get('analysis', {})
-            complexity = plan_data.get('estimated_complexity', 'moderate')
-            
-            # Apply manual overrides
-            if force_cultural and 'cultural_adapter' not in required_agents:
-                required_agents.insert(1, 'cultural_adapter')
-                reasoning['cultural_adapter'] = '✅ Forced by user override'
-            
-            if force_tone and 'tone_specialist' not in required_agents:
-                insert_pos = 2 if 'cultural_adapter' in required_agents else 1
-                required_agents.insert(insert_pos, 'tone_specialist')
-                reasoning['tone_specialist'] = '✅ Forced by user override'
-            
-            if force_technical and 'technical_reviewer' not in required_agents:
-                finalize_pos = required_agents.index('finalize') if 'finalize' in required_agents else len(required_agents)
-                required_agents.insert(finalize_pos, 'technical_reviewer')
-                reasoning['technical_reviewer'] = '✅ Forced by user override'
-            
-            if force_literary and 'literary_editor' not in required_agents:
-                finalize_pos = required_agents.index('finalize') if 'finalize' in required_agents else len(required_agents)
-                required_agents.insert(finalize_pos, 'literary_editor')
-                reasoning['literary_editor'] = '✅ Forced by user override'
-            
-            if force_bertscore and 'bertscore_validator' not in required_agents and same_lang:
-                required_agents.append('bertscore_validator')
-                reasoning['bertscore_validator'] = '✅ Forced by user override'
-            
-            # Ensure required agents are present
-            if 'literal_translator' not in required_agents:
-                required_agents.insert(0, 'literal_translator')
-            if 'finalize' not in required_agents:
-                required_agents.append('finalize')
-            
-            all_agents = ['literal_translator', 'cultural_adapter', 'tone_specialist', 
-                         'technical_reviewer', 'literary_editor', 'finalize', 'bertscore_validator']
-            skipped = [a for a in all_agents if a not in required_agents]
-            
-            state['agent_plan'] = required_agents
-            state['agent_plan_reasoning'] = reasoning
-            state['planning_analysis'] = analysis
-            state['skipped_agents'] = skipped
-            state['estimated_complexity'] = complexity
-            state['current_agent_index'] = 0
-            
-            total_agents = len(all_agents)
-            used_agents = len(required_agents)
-            savings_pct = int((1 - used_agents / total_agents) * 100)
-            
-            state['agent_notes'].append(
-                f"{self.emoji} {self.name}: Plan created - {used_agents}/{total_agents} agents "
-                f"({savings_pct}% savings) - Complexity: {complexity}"
-            )
-            
-        except Exception as e:
-            st.warning(f"Planning agent failed, using conservative defaults: {str(e)}")
-            state['agent_plan'] = [
-                'literal_translator', 'cultural_adapter', 'tone_specialist',
-                'technical_reviewer', 'literary_editor', 'finalize'
-            ]
-            if same_lang and BERT_AVAILABLE:
-                state['agent_plan'].append('bertscore_validator')
-            
-            state['agent_plan_reasoning'] = {
-                a: '✅ Included (fallback mode)' for a in state['agent_plan']
-            }
-            state['skipped_agents'] = []
-            state['estimated_complexity'] = 'unknown'
-            state['current_agent_index'] = 0
-            state['planning_analysis'] = {'error': str(e), 'mode': 'fallback'}
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Planning failed - using all agents (safe mode)")
-        
+                
+                response = await self.llm.ainvoke([
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_prompt)
+                ])
+               
+                content = response.content.strip()
+                content = re.sub(r'```json\s*', '', content)
+                content = re.sub(r'```\s*$', '', content)
+               
+                plan_data = json.loads(content)
+               
+                required_agents = plan_data.get('required_agents', [])
+                reasoning = plan_data.get('reasoning', {})
+                analysis = plan_data.get('analysis', {})
+                complexity = plan_data.get('estimated_complexity', 'moderate')
+               
+                # Apply manual overrides
+                if force_cultural and 'cultural_adapter' not in required_agents:
+                    required_agents.insert(1, 'cultural_adapter')
+                    reasoning['cultural_adapter'] = '✅ Forced by user override'
+               
+                if force_tone and 'tone_specialist' not in required_agents:
+                    insert_pos = 2 if 'cultural_adapter' in required_agents else 1
+                    required_agents.insert(insert_pos, 'tone_specialist')
+                    reasoning['tone_specialist'] = '✅ Forced by user override'
+               
+                if force_technical and 'technical_reviewer' not in required_agents:
+                    finalize_pos = required_agents.index('finalize') if 'finalize' in required_agents else len(required_agents)
+                    required_agents.insert(finalize_pos, 'technical_reviewer')
+                    reasoning['technical_reviewer'] = '✅ Forced by user override'
+               
+                if force_literary and 'literary_editor' not in required_agents:
+                    finalize_pos = required_agents.index('finalize') if 'finalize' in required_agents else len(required_agents)
+                    required_agents.insert(finalize_pos, 'literary_editor')
+                    reasoning['literary_editor'] = '✅ Forced by user override'
+               
+                if force_bertscore and 'bertscore_validator' not in required_agents and same_lang:
+                    required_agents.append('bertscore_validator')
+                    reasoning['bertscore_validator'] = '✅ Forced by user override'
+               
+                # Ensure required agents are present
+                if 'literal_translator' not in required_agents:
+                    required_agents.insert(0, 'literal_translator')
+                if 'finalize' not in required_agents:
+                    required_agents.append('finalize')
+               
+                all_agents = ['literal_translator', 'cultural_adapter', 'tone_specialist',
+                             'technical_reviewer', 'literary_editor', 'finalize', 'bertscore_validator']
+                skipped = [a for a in all_agents if a not in required_agents]
+               
+                state['agent_plan'] = required_agents
+                state['agent_plan_reasoning'] = reasoning
+                state['planning_analysis'] = analysis
+                state['skipped_agents'] = skipped
+                state['estimated_complexity'] = complexity
+                state['current_agent_index'] = 0
+               
+                total_agents = len(all_agents)
+                used_agents = len(required_agents)
+                savings_pct = int((1 - used_agents / total_agents) * 100)
+               
+                state['agent_notes'].append(
+                    f"{self.emoji} {self.name}: Plan created - {used_agents}/{total_agents} agents "
+                    f"({savings_pct}% savings) - Complexity: {complexity}"
+                )
+                break
+            except Exception as e:
+                attempt += 1
+                if attempt < max_attempts:
+                    state['agent_notes'].append(f"{self.emoji} {self.name}: Retry attempt {attempt} after error: {str(e)}")
+                else:
+                    st.warning(f"Planning agent failed after {max_attempts} attempts, using conservative defaults: {str(e)}")
+                    state['agent_plan'] = [
+                        'literal_translator', 'cultural_adapter', 'tone_specialist',
+                        'technical_reviewer', 'literary_editor', 'finalize'
+                    ]
+                    if same_lang and BERT_AVAILABLE:
+                        state['agent_plan'].append('bertscore_validator')
+                   
+                    state['agent_plan_reasoning'] = {
+                        a: '✅ Included (fallback mode)' for a in state['agent_plan']
+                    }
+                    state['skipped_agents'] = []
+                    state['estimated_complexity'] = 'unknown'
+                    state['current_agent_index'] = 0
+                    state['planning_analysis'] = {'error': str(e), 'mode': 'fallback'}
+                    state['agent_notes'].append(f"{self.emoji} {self.name}: Planning failed - using all agents (safe mode)")
         return state
-
-
 # =====================
 # FIXED ROUTER FUNCTION
 # =====================
-
 def route_to_next_agent(state: TranslationState) -> str:
     """Determine next agent based on the plan"""
     agent_plan = state.get('agent_plan', [])
     current_index = state.get('current_agent_index', 0)
-    
+   
     if current_index >= len(agent_plan):
         return END
-    
+   
     next_agent = agent_plan[current_index]
-    
+   
     return next_agent
-
-
 # =====================
 # FIXED AGENT CLASSES - Each increments index
 # =====================
-
 class LiteralTranslationAgent:
     def __init__(self, llm: BaseChatModel):
         self.llm = llm
         self.name = "Baseline Specialist"
         self.emoji = "🔤"
-
-    def translate(self, state: TranslationState) -> TranslationState:
-        same_lang = languages_equivalent(state['source_language'], state['target_language'])
-
-        system_prompt = (
-            "You provide the baseline pass:\n"
-            "- Translation mode: accurate, faithful literal translation.\n"
-            "- Refine mode: faithful copy-edit that preserves meaning and structure.\n\n"
-            + LANGUAGE_GUARDRAIL
-        )
-
-        if same_lang:
-            user_prompt = f"""Refine the following text in {state['target_language']} without changing its meaning.
+    async def translate(self, state: TranslationState) -> TranslationState:
+        if state.get('literal_translation'):
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Already complete - skipping")
+            state['current_agent_index'] = state.get('current_agent_index', 0) + 1
+            return state
+        attempt = 0
+        max_attempts = 2
+        while attempt < max_attempts:
+            try:
+                same_lang = languages_equivalent(state['source_language'], state['target_language'])
+                system_prompt = (
+                    "You provide the baseline pass:\n"
+                    "- Translation mode: accurate, faithful literal translation.\n"
+                    "- Refine mode: faithful copy-edit that preserves meaning and structure.\n\n"
+                    + LANGUAGE_GUARDRAIL
+                )
+                if same_lang:
+                    user_prompt = f"""Refine the following text in {state['target_language']} without changing its meaning.
 {LANGUAGE_GUARDRAIL}
-
 **GOAL (REFINE MODE):**
 - Preserve semantics, improve clarity and microstructure
 - Flag idioms/ambiguities for downstream agents
 - Keep terminology and proper nouns intact
 - OUTPUT FORMAT: Provide the refined text first, then add "EDITOR NOTES:" (notes must be in {state['target_language']}).
-
 **TEXT TO REFINE:**
 {state['source_text']}
-
 **AUDIENCE**: {state['target_audience']}
 **GENRE**: {state.get('genre', 'General')}
 """
-            
-            if 'enable_entity_awareness' in st.session_state and st.session_state.enable_entity_awareness:
-                if state.get('source_entities'):
-                    entity_list = "\n".join([f"- {e['name']} ({e['type']})" for e in state['source_entities'][:15]])
-                    user_prompt += f"\n\n**IMPORTANT ENTITIES TO PRESERVE:**\n{entity_list}\n"
-        else:
-            user_prompt = f"""Translate the following text from {state['source_language']} to {state['target_language']}.
+                   
+                    if 'enable_entity_awareness' in st.session_state and st.session_state.enable_entity_awareness:
+                        if state.get('source_entities'):
+                            entity_list = "\n".join([f"- {e['name']} ({e['type']})" for e in state['source_entities'][:15]])
+                            user_prompt += f"\n\n**IMPORTANT ENTITIES TO PRESERVE:**\n{entity_list}\n"
+                else:
+                    user_prompt = f"""Translate the following text from {state['source_language']} to {state['target_language']}.
 {LANGUAGE_GUARDRAIL}
-
 **CRITICAL INSTRUCTIONS:**
 1. Translate with maximum fidelity to the original meaning.
 2. Maintain sentence structure initially.
 3. Flag idioms/ambiguities for downstream agents.
 4. OUTPUT FORMAT: Provide the literal translation first, then "TRANSLATOR NOTES:" (notes must be in {state['target_language']}).
-
 **SOURCE TEXT:**
 {state['source_text']}
-
 **TARGET AUDIENCE**: {state['target_audience']}
 **GENRE**: {state.get('genre', 'General')}
 """
-            
-            if 'enable_entity_awareness' in st.session_state and st.session_state.enable_entity_awareness:
-                if state.get('source_entities'):
-                    entity_list = "\n".join([f"- {e['name']} ({e['type']})" for e in state['source_entities'][:15]])
-                    user_prompt += f"\n\n**IMPORTANT ENTITIES TO PRESERVE:**\n{entity_list}\n"
-
-        try:
-            response = self.llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
-            content = response.content
-
-            translation, found_label, notes = split_notes(content, ["TRANSLATOR NOTES:", "EDITOR NOTES:"])
-            issues = []
-            if notes:
-                issues.append({
-                    "agent": self.name,
-                    "type": (found_label[:-1].lower().replace(" ", "_") if found_label else "notes"),
-                    "content": notes
-                })
-
-            translation = reinforce_language(self.llm, translation, state['target_language'])
-            state['literal_translation'] = translation
-            state['literal_issues'] = issues
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Baseline {'refinement' if same_lang else 'literal translation'} complete")
-        except Exception as e:
-            st.error(f"Error in Literal step: {str(e)}")
-            state['literal_translation'] = state['source_text']
-            state['literal_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using source text")
-        
+                   
+                    if 'enable_entity_awareness' in st.session_state and st.session_state.enable_entity_awareness:
+                        if state.get('source_entities'):
+                            entity_list = "\n".join([f"- {e['name']} ({e['type']})" for e in state['source_entities'][:15]])
+                            user_prompt += f"\n\n**IMPORTANT ENTITIES TO PRESERVE:**\n{entity_list}\n"
+                response = await self.llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
+                content = response.content
+                translation, found_label, notes = split_notes(content, ["TRANSLATOR NOTES:", "EDITOR NOTES:"])
+                issues = []
+                if notes:
+                    issues.append({
+                        "agent": self.name,
+                        "type": (found_label[:-1].lower().replace(" ", "_") if found_label else "notes"),
+                        "content": notes
+                    })
+                translation = await reinforce_language(self.llm, translation, state['target_language'])
+                state['literal_translation'] = translation
+                state['literal_issues'] = issues
+                state['agent_notes'].append(f"{self.emoji} {self.name}: Baseline {'refinement' if same_lang else 'literal translation'} complete")
+                break
+            except Exception as e:
+                attempt += 1
+                if attempt < max_attempts:
+                    state['agent_notes'].append(f"{self.emoji} {self.name}: Retry attempt {attempt} after error: {str(e)}")
+                else:
+                    st.error(f"Error in Literal step after {max_attempts} attempts: {str(e)}")
+                    state['literal_translation'] = state['source_text']
+                    state['literal_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
+                    state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using source text")
+       
         # INCREMENT INDEX
         state['current_agent_index'] = state.get('current_agent_index', 0) + 1
         return state
-
-
 class CulturalAdaptationAgent:
     def __init__(self, llm: BaseChatModel):
         self.llm = llm
         self.name = "Cultural Localization Expert"
         self.emoji = "🌍"
-
-    def adapt(self, state: TranslationState) -> TranslationState:
-        same_lang = languages_equivalent(state['source_language'], state['target_language'])
-
-        system_prompt = "You adapt content for cultural/register naturalness in the target context.\n\n" + LANGUAGE_GUARDRAIL
-
-        if same_lang:
-            task_text = (
-                "Refine for the target variety's norms (e.g., spelling, idioms, punctuation, register). "
-                "Replace region-specific expressions with appropriate target-variety equivalents."
-            )
-            notes_label = "EDITOR NOTES:"
-        else:
-            task_text = (
-                "Replace source-culture idioms with target equivalents, adapt references, "
-                "and adjust communication style for the target audience."
-            )
-            notes_label = "CULTURAL NOTES:"
-
-        user_prompt = f"""Work on the following text.
-
+    async def adapt(self, state: TranslationState) -> TranslationState:
+        if state.get('cultural_adaptation'):
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Already complete - skipping")
+            state['current_agent_index'] = state.get('current_agent_index', 0) + 1
+            return state
+        previous_text = state.get('literal_translation') or ""
+        if text_similarity(previous_text, state.get('cultural_adaptation', '')) > 0.95:
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Minimal changes detected - skipping")
+            state['current_agent_index'] = state.get('current_agent_index', 0) + 1
+            return state
+        attempt = 0
+        max_attempts = 2
+        while attempt < max_attempts:
+            try:
+                same_lang = languages_equivalent(state['source_language'], state['target_language'])
+                system_prompt = "You adapt content for cultural/register naturalness in the target context.\n\n" + LANGUAGE_GUARDRAIL
+                if same_lang:
+                    task_text = (
+                        "Refine for the target variety's norms (e.g., spelling, idioms, punctuation, register). "
+                        "Replace region-specific expressions with appropriate target-variety equivalents."
+                    )
+                    notes_label = "EDITOR NOTES:"
+                else:
+                    task_text = (
+                        "Replace source-culture idioms with target equivalents, adapt references, "
+                        "and adjust communication style for the target audience."
+                    )
+                    notes_label = "CULTURAL NOTES:"
+                user_prompt = f"""Work on the following text.
 {LANGUAGE_GUARDRAIL}
-
 **TARGET CONTEXT**: {state['target_language']} / Audience: {state['target_audience']}
 **TEXT:**
 {state['literal_translation']}
-
 **YOUR TASKS:**
 - {task_text}
-
 **OUTPUT**: Provide the adapted text, then {notes_label} (notes must be in {state['target_language']})."""
-
-        try:
-            response = self.llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
-            content = response.content
-
-            adapted, found_label, notes = split_notes(content, ["CULTURAL NOTES:", "EDITOR NOTES:"])
-            issues = []
-            if notes:
-                issues.append({
-                    "agent": self.name,
-                    "type": (found_label[:-1].lower().replace(" ", "_") if found_label else "notes"),
-                    "content": notes
-                })
-
-            adapted = reinforce_language(self.llm, adapted, state['target_language'])
-            state['cultural_adaptation'] = adapted
-            state['cultural_issues'] = issues
-            state['agent_notes'].append(f"{self.emoji} {self.name}: {'Register' if same_lang else 'Cultural'} adaptation complete")
-        except Exception as e:
-            st.error(f"Error in Cultural step: {str(e)}")
-            state['cultural_adaptation'] = state['literal_translation']
-            state['cultural_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using previous version")
-        
+                response = await self.llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
+                content = response.content
+                adapted, found_label, notes = split_notes(content, ["CULTURAL NOTES:", "EDITOR NOTES:"])
+                issues = []
+                if notes:
+                    issues.append({
+                        "agent": self.name,
+                        "type": (found_label[:-1].lower().replace(" ", "_") if found_label else "notes"),
+                        "content": notes
+                    })
+                adapted = await reinforce_language(self.llm, adapted, state['target_language'])
+                state['cultural_adaptation'] = adapted
+                state['cultural_issues'] = issues
+                state['agent_notes'].append(f"{self.emoji} {self.name}: {'Register' if same_lang else 'Cultural'} adaptation complete")
+                break
+            except Exception as e:
+                attempt += 1
+                if attempt < max_attempts:
+                    state['agent_notes'].append(f"{self.emoji} {self.name}: Retry attempt {attempt} after error: {str(e)}")
+                else:
+                    st.error(f"Error in Cultural step after {max_attempts} attempts: {str(e)}")
+                    state['cultural_adaptation'] = state['literal_translation']
+                    state['cultural_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
+                    state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using previous version")
+       
         # INCREMENT INDEX
         state['current_agent_index'] = state.get('current_agent_index', 0) + 1
         return state
-
-
 class ToneConsistencyAgent:
     def __init__(self, llm: BaseChatModel):
         self.llm = llm
         self.name = "Tone & Voice Consistency Director"
         self.emoji = "🎭"
-
-    def adjust_tone(self, state: TranslationState) -> TranslationState:
-        system_prompt = "You ensure tone/voice consistency and natural readability.\n\n" + LANGUAGE_GUARDRAIL
-        
-        previous_text = state.get('cultural_adaptation') or state.get('literal_translation')
-        
-        user_prompt = f"""Adjust this text for tone consistency and readability.
-
+    async def adjust_tone(self, state: TranslationState) -> TranslationState:
+        if state.get('tone_adjustment'):
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Already complete - skipping")
+            state['current_agent_index'] = state.get('current_agent_index', 0) + 1
+            return state
+        previous_text = state.get('cultural_adaptation') or state.get('literal_translation') or ""
+        if text_similarity(previous_text, state.get('tone_adjustment', '')) > 0.95:
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Minimal changes detected - skipping")
+            state['current_agent_index'] = state.get('current_agent_index', 0) + 1
+            return state
+        attempt = 0
+        max_attempts = 2
+        while attempt < max_attempts:
+            try:
+                system_prompt = "You ensure tone/voice consistency and natural readability.\n\n" + LANGUAGE_GUARDRAIL
+               
+                user_prompt = f"""Adjust this text for tone consistency and readability.
 {LANGUAGE_GUARDRAIL}
-
 **AUDIENCE**: {state['target_audience']}
 **TEXT:**
 {previous_text}
-
 **YOUR TASKS:**
 1. Vary sentence length for rhythm
 2. Match formality to audience
 3. Ensure consistent voice
 4. Optimize readability
-
 **OUTPUT**: Provide the adjusted text, then "TONE NOTES:" (notes must be in {state['target_language']})."""
-
-        try:
-            response = self.llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
-            content = response.content
-            adjusted, found_label, notes = split_notes(content, ["TONE NOTES:"])
-
-            issues = []
-            if notes:
-                issues.append({"agent": self.name, "type": "tone_notes", "content": notes})
-
-            adjusted = reinforce_language(self.llm, adjusted, state['target_language'])
-            state['tone_adjustment'] = adjusted
-            state['tone_issues'] = issues
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Tone/readability optimized")
-        except Exception as e:
-            st.error(f"Error in Tone step: {str(e)}")
-            state['tone_adjustment'] = previous_text
-            state['tone_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using previous version")
-        
+                response = await self.llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
+                content = response.content
+                adjusted, found_label, notes = split_notes(content, ["TONE NOTES:"])
+                issues = []
+                if notes:
+                    issues.append({"agent": self.name, "type": "tone_notes", "content": notes})
+                adjusted = await reinforce_language(self.llm, adjusted, state['target_language'])
+                state['tone_adjustment'] = adjusted
+                state['tone_issues'] = issues
+                state['agent_notes'].append(f"{self.emoji} {self.name}: Tone/readability optimized")
+                break
+            except Exception as e:
+                attempt += 1
+                if attempt < max_attempts:
+                    state['agent_notes'].append(f"{self.emoji} {self.name}: Retry attempt {attempt} after error: {str(e)}")
+                else:
+                    st.error(f"Error in Tone step after {max_attempts} attempts: {str(e)}")
+                    state['tone_adjustment'] = previous_text
+                    state['tone_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
+                    state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using previous version")
+       
         # INCREMENT INDEX
         state['current_agent_index'] = state.get('current_agent_index', 0) + 1
         return state
-
-
 class TechnicalReviewAgent:
     def __init__(self, llm: BaseChatModel):
         self.llm = llm
         self.name = "Technical Accuracy Auditor"
         self.emoji = "🔬"
-
-    def review(self, state: TranslationState) -> TranslationState:
-        system_prompt = "You verify notation, terminology, units, and formatting.\n\n" + LANGUAGE_GUARDRAIL
-        
-        previous_text = (state.get('tone_adjustment') or 
-                        state.get('cultural_adaptation') or 
-                        state.get('literal_translation'))
-        
-        user_prompt = f"""Review the following for technical accuracy.
-
+    async def review(self, state: TranslationState) -> TranslationState:
+        if state.get('technical_review_version'):
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Already complete - skipping")
+            state['current_agent_index'] = state.get('current_agent_index', 0) + 1
+            return state
+        previous_text = (state.get('tone_adjustment') or
+                         state.get('cultural_adaptation') or
+                         state.get('literal_translation') or "")
+        if text_similarity(previous_text, state.get('technical_review_version', '')) > 0.95:
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Minimal changes detected - skipping")
+            state['current_agent_index'] = state.get('current_agent_index', 0) + 1
+            return state
+        attempt = 0
+        max_attempts = 2
+        while attempt < max_attempts:
+            try:
+                system_prompt = "You verify notation, terminology, units, and formatting.\n\n" + LANGUAGE_GUARDRAIL
+               
+                user_prompt = f"""Review the following for technical accuracy.
 {LANGUAGE_GUARDRAIL}
-
 **TEXT:**
 {previous_text}
-
 **YOUR TASKS:**
 1. Verify notation/symbols
 2. Check terminology
 3. Validate measurements/units
 4. Ensure number/date/time formatting
-
 **OUTPUT**: Provide the reviewed text, then "TECHNICAL NOTES:" if corrections made (notes must be in {state['target_language']})."""
-
-        try:
-            response = self.llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
-            content = response.content
-            reviewed, found_label, notes = split_notes(content, ["TECHNICAL NOTES:"])
-
-            issues = []
-            if notes:
-                issues.append({"agent": self.name, "type": "technical_notes", "content": notes})
-
-            needs_review = "NEEDS_REVIEW" in content or "NEEDS REVIEW" in content
-
-            reviewed = reinforce_language(self.llm, reviewed, state['target_language'])
-            state['technical_review_version'] = reviewed
-            state['technical_issues'] = issues
-            state['needs_human_review'] = needs_review
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Technical review completed")
-        except Exception as e:
-            st.error(f"Error in Technical step: {str(e)}")
-            state['technical_review_version'] = previous_text
-            state['technical_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
-            state['needs_human_review'] = False
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using previous version")
-        
+                response = await self.llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
+                content = response.content
+                reviewed, found_label, notes = split_notes(content, ["TECHNICAL NOTES:"])
+                issues = []
+                if notes:
+                    issues.append({"agent": self.name, "type": "technical_notes", "content": notes})
+                needs_review = "NEEDS_REVIEW" in content or "NEEDS REVIEW" in content
+                reviewed = await reinforce_language(self.llm, reviewed, state['target_language'])
+                state['technical_review_version'] = reviewed
+                state['technical_issues'] = issues
+                state['needs_human_review'] = needs_review
+                state['agent_notes'].append(f"{self.emoji} {self.name}: Technical review completed")
+                break
+            except Exception as e:
+                attempt += 1
+                if attempt < max_attempts:
+                    state['agent_notes'].append(f"{self.emoji} {self.name}: Retry attempt {attempt} after error: {str(e)}")
+                else:
+                    st.error(f"Error in Technical step after {max_attempts} attempts: {str(e)}")
+                    state['technical_review_version'] = previous_text
+                    state['technical_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
+                    state['needs_human_review'] = False
+                    state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using previous version")
+       
         # INCREMENT INDEX
         state['current_agent_index'] = state.get('current_agent_index', 0) + 1
         return state
-
-
 class LiteraryEditorAgent:
     def __init__(self, llm: BaseChatModel):
         self.llm = llm
         self.name = "Literary Style & Excellence Editor"
         self.emoji = "✍️"
-
-    def polish(self, state: TranslationState) -> TranslationState:
-        system_prompt = "You elevate prose to publication quality without altering meaning.\n\n" + LANGUAGE_GUARDRAIL
-        
+    async def polish(self, state: TranslationState) -> TranslationState:
+        if state.get('literary_polish'):
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Already complete - skipping")
+            state['current_agent_index'] = state.get('current_agent_index', 0) + 1
+            return state
         previous_text = (state.get('technical_review_version') or
-                        state.get('tone_adjustment') or 
-                        state.get('cultural_adaptation') or 
-                        state.get('literal_translation'))
-        
-        user_prompt = f"""Polish this text to publication quality.
-
+                         state.get('tone_adjustment') or
+                         state.get('cultural_adaptation') or
+                         state.get('literal_translation') or "")
+        if text_similarity(previous_text, state.get('literary_polish', '')) > 0.95:
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Minimal changes detected - skipping")
+            state['current_agent_index'] = state.get('current_agent_index', 0) + 1
+            return state
+        attempt = 0
+        max_attempts = 2
+        while attempt < max_attempts:
+            try:
+                system_prompt = "You elevate prose to publication quality without altering meaning.\n\n" + LANGUAGE_GUARDRAIL
+               
+                user_prompt = f"""Polish this text to publication quality.
 {LANGUAGE_GUARDRAIL}
-
 **TEXT:**
 {previous_text}
 **AUDIENCE**: {state['target_audience']}
-
 **YOUR TASKS:**
 - Eliminate awkward phrasing
 - Enhance word choice
 - Optimize prose rhythm
 - Strengthen imagery
 - Maintain meaning
-
 **OUTPUT**: Provide the polished text, then "LITERARY NOTES:" (notes must be in {state['target_language']})."""
-
-        try:
-            response = self.llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
-            content = response.content
-
-            polished, found_label, notes = split_notes(content, ["LITERARY NOTES:"])
-            issues = []
-            if notes:
-                issues.append({"agent": self.name, "type": "literary_notes", "content": notes})
-
-            polished = reinforce_language(self.llm, polished, state['target_language'])
-            state['literary_polish'] = polished
-            state['literary_issues'] = issues
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Literary polish completed")
-        except Exception as e:
-            st.error(f"Error in Literary step: {str(e)}")
-            state['literary_polish'] = previous_text
-            state['literary_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using previous version")
-        
+                response = await self.llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
+                content = response.content
+                polished, found_label, notes = split_notes(content, ["LITERARY NOTES:"])
+                issues = []
+                if notes:
+                    issues.append({"agent": self.name, "type": "literary_notes", "content": notes})
+                polished = await reinforce_language(self.llm, polished, state['target_language'])
+                state['literary_polish'] = polished
+                state['literary_issues'] = issues
+                state['agent_notes'].append(f"{self.emoji} {self.name}: Literary polish completed")
+                break
+            except Exception as e:
+                attempt += 1
+                if attempt < max_attempts:
+                    state['agent_notes'].append(f"{self.emoji} {self.name}: Retry attempt {attempt} after error: {str(e)}")
+                else:
+                    st.error(f"Error in Literary step after {max_attempts} attempts: {str(e)}")
+                    state['literary_polish'] = previous_text
+                    state['literary_issues'] = [{"agent": self.name, "type": "error", "content": str(e)}]
+                    state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using previous version")
+       
         # INCREMENT INDEX
         state['current_agent_index'] = state.get('current_agent_index', 0) + 1
         return state
-
-
 class QualityControlAgent:
     def __init__(self, llm: BaseChatModel):
         self.llm = llm
         self.name = "Master Quality Synthesizer"
         self.emoji = "✅"
-
-    def finalize(self, state: TranslationState) -> TranslationState:
-        system_prompt = "You integrate all contributions and output the final publication-ready text.\n\n" + LANGUAGE_GUARDRAIL
-
-        all_issues = (
-            state.get('literal_issues', []) +
-            state.get('cultural_issues', []) +
-            state.get('tone_issues', []) +
-            state.get('technical_issues', []) +
-            state.get('literary_issues', [])
-        )
-
-        latest_version = (
-            state.get('literary_polish') or
-            state.get('technical_review_version') or
-            state.get('tone_adjustment') or
-            state.get('cultural_adaptation') or
-            state.get('literal_translation')
-        )
-
-        user_prompt = f"""Produce the final, publication-ready text.
-
+    async def finalize(self, state: TranslationState) -> TranslationState:
+        if state.get('final_translation'):
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Already complete - skipping")
+            state['current_agent_index'] = state.get('current_agent_index', 0) + 1
+            return state
+        previous_text = (state.get('literary_polish') or
+                         state.get('technical_review_version') or
+                         state.get('tone_adjustment') or
+                         state.get('cultural_adaptation') or
+                         state.get('literal_translation') or "")
+        if text_similarity(previous_text, state.get('final_translation', '')) > 0.95:
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Minimal changes detected - skipping")
+            state['current_agent_index'] = state.get('current_agent_index', 0) + 1
+            return state
+        attempt = 0
+        max_attempts = 2
+        while attempt < max_attempts:
+            try:
+                system_prompt = "You integrate all contributions and output the final publication-ready text.\n\n" + LANGUAGE_GUARDRAIL
+                all_issues = (
+                    state.get('literal_issues', []) +
+                    state.get('cultural_issues', []) +
+                    state.get('tone_issues', []) +
+                    state.get('technical_issues', []) +
+                    state.get('literary_issues', [])
+                )
+                latest_version = (
+                    state.get('literary_polish') or
+                    state.get('technical_review_version') or
+                    state.get('tone_adjustment') or
+                    state.get('cultural_adaptation') or
+                    state.get('literal_translation')
+                )
+                user_prompt = f"""Produce the final, publication-ready text.
 {LANGUAGE_GUARDRAIL}
-
 **LATEST VERSION:**
 {latest_version}
-
 **OUTPUT**: Provide ONLY the final text without meta-commentary, entirely in {state['target_language']}.
 """
-
-        try:
-            response = self.llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
-            content = reinforce_language(self.llm, response.content.strip(), state['target_language'])
-
-            critical_passages = extract_critical_passages(content, all_issues)
-            state['final_translation'] = content
-            state['completed_at'] = datetime.now().isoformat()
-            state['critical_passages'] = critical_passages
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Final output approved")
-            
-            if 'enable_entity_tracking' in st.session_state and st.session_state.enable_entity_tracking:
-                entity_tracker = st.session_state.entity_tracker
-                state['translated_entities'] = entity_tracker.extract_entities(content)
-                
-                if state.get('source_entities'):
-                    source_names = {e['name'].lower() for e in state['source_entities']}
-                    translated_names = {e['name'].lower() for e in state['translated_entities']}
-                    if source_names:
-                        state['entity_preservation_rate'] = len(source_names & translated_names) / len(source_names)
-        except Exception as e:
-            st.error(f"Error in Finalize step: {str(e)}")
-            state['final_translation'] = latest_version
-            state['completed_at'] = datetime.now().isoformat()
-            state['critical_passages'] = []
-            state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using latest version")
-        
+                response = await self.llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
+                content = await reinforce_language(self.llm, response.content.strip(), state['target_language'])
+                critical_passages = extract_critical_passages(content, all_issues)
+                state['final_translation'] = content
+                state['completed_at'] = datetime.now().isoformat()
+                state['critical_passages'] = critical_passages
+                state['agent_notes'].append(f"{self.emoji} {self.name}: Final output approved")
+               
+                if 'enable_entity_tracking' in st.session_state and st.session_state.enable_entity_tracking:
+                    entity_tracker = st.session_state.entity_tracker
+                    state['translated_entities'] = entity_tracker.extract_entities(content)
+                   
+                    if state.get('source_entities'):
+                        source_names = {e['name'].lower() for e in state['source_entities']}
+                        translated_names = {e['name'].lower() for e in state['translated_entities']}
+                        if source_names:
+                            state['entity_preservation_rate'] = len(source_names & translated_names) / len(source_names)
+                break
+            except Exception as e:
+                attempt += 1
+                if attempt < max_attempts:
+                    state['agent_notes'].append(f"{self.emoji} {self.name}: Retry attempt {attempt} after error: {str(e)}")
+                else:
+                    st.error(f"Error in Finalize step after {max_attempts} attempts: {str(e)}")
+                    state['final_translation'] = latest_version
+                    state['completed_at'] = datetime.now().isoformat()
+                    state['critical_passages'] = []
+                    state['agent_notes'].append(f"{self.emoji} {self.name}: Error - using latest version")
+       
         # INCREMENT INDEX
         state['current_agent_index'] = state.get('current_agent_index', 0) + 1
         return state
-
-
 class BERTScoreValidatorAgent:
     def __init__(self, llm: BaseChatModel):
         self.llm = llm
         self.name = "Semantic Fidelity Validator"
         self.emoji = "🎯"
-        self.max_attempts = 3
         self.target_score = 0.8
-
-    def validate_and_refine(self, state: TranslationState) -> TranslationState:
+    async def validate_and_refine(self, state: TranslationState) -> TranslationState:
         """Validate BERTScore and refine if needed (same-language mode only)"""
-        
+        if state.get('bertscore_history') and state['bertscore_history'][-1]['f1'] >= self.target_score:
+            state['agent_notes'].append(f"{self.emoji} {self.name}: Already validated - skipping")
+            state['current_agent_index'] = state.get('current_agent_index', 0) + 1
+            return state
+       
         if not languages_equivalent(state['source_language'], state['target_language']):
             state['agent_notes'].append(f"{self.emoji} {self.name}: Skipped (cross-language mode)")
             state['current_agent_index'] = state.get('current_agent_index', 0) + 1
             return state
-        
+       
         if not BERT_AVAILABLE:
             state['agent_notes'].append(f"{self.emoji} {self.name}: Skipped (bert-score not installed)")
             state['current_agent_index'] = state.get('current_agent_index', 0) + 1
             return state
-
         source_text = state['source_text']
-        current_text = state['final_translation']
-        
+        current_text = state['final_translation'] or ""
+       
         if 'bertscore_attempts' not in state:
             state['bertscore_attempts'] = 0
         if 'bertscore_history' not in state:
             state['bertscore_history'] = []
-        
+       
         attempt = 0
-        while attempt < self.max_attempts:
+        max_refinements = 20  # Safety cap to prevent infinite loops
+        while attempt < max_refinements:
             state['bertscore_attempts'] += 1
             attempt += 1
-            
+           
             scores = compute_bertscore(current_text, source_text)
-            
+           
             if scores is None:
                 state['agent_notes'].append(f"{self.emoji} {self.name}: BERTScore computation failed")
                 break
-            
+           
             f1_score = scores['f1']
             state['bertscore_history'].append({
                 'attempt': state['bertscore_attempts'],
@@ -1295,75 +1260,62 @@ class BERTScoreValidatorAgent:
                 'precision': scores['precision'],
                 'recall': scores['recall']
             })
-            
+           
             if f1_score >= self.target_score:
                 state['agent_notes'].append(
-                    f"{self.emoji} {self.name}: ✅ BERTScore validated (F1={f1_score:.3f})"
+                    f"{self.emoji} {self.name}: ✅ BERTScore validated (F1={f1_score:.3f}) after {attempt} attempt(s)"
                 )
                 state['final_translation'] = current_text
                 break
-            
-            if attempt >= self.max_attempts:
-                state['agent_notes'].append(
-                    f"{self.emoji} {self.name}: ⚠️ Max attempts reached (F1={f1_score:.3f} < {self.target_score})"
-                )
-                state['needs_human_review'] = True
+           
+            if text_similarity(current_text, source_text) > 0.98:  # Near identical, no point refining
+                state['agent_notes'].append(f"{self.emoji} {self.name}: Near-identical to source - accepting (F1={f1_score:.3f})")
                 break
-            
+           
             state['agent_notes'].append(
-                f"{self.emoji} {self.name}: 🔄 Refining (F1={f1_score:.3f} < {self.target_score}, attempt {attempt}/{self.max_attempts})"
+                f"{self.emoji} {self.name}: 🔄 Refining (F1={f1_score:.3f} < {self.target_score}, attempt {attempt})"
             )
-            
+           
             system_prompt = (
                 "You are a semantic fidelity specialist. Your ONLY goal is to increase semantic similarity "
                 "to the source text while maintaining natural language quality.\n\n"
                 + LANGUAGE_GUARDRAIL
             )
-            
+           
             user_prompt = f"""The current refined text has insufficient semantic similarity to the source (BERTScore F1: {f1_score:.3f}, target: {self.target_score}).
-
 {LANGUAGE_GUARDRAIL}
-
 **SOURCE TEXT (preserve its meaning):**
 {source_text}
-
 **CURRENT REFINED TEXT (needs closer alignment):**
 {current_text}
-
 **YOUR TASK:**
 1. Identify where meaning has drifted from the source
 2. Adjust ONLY those areas to restore semantic fidelity
 3. DO NOT over-edit - preserve what is already good
 4. Maintain natural, fluent language
 5. Keep technical terms and proper nouns identical
-
 **CRITICAL:** The goal is semantic similarity, not word-for-word copying. Preserve the SOURCE's meaning using natural language.
-
 **OUTPUT:** Provide ONLY the refined text in {state['target_language']}, with no meta-commentary."""
-
             try:
-                response = self.llm.invoke([
+                response = await self.llm.ainvoke([
                     SystemMessage(content=system_prompt),
                     HumanMessage(content=user_prompt)
                 ])
-                current_text = reinforce_language(self.llm, response.content.strip(), state['target_language'])
-                
+                current_text = await reinforce_language(self.llm, response.content.strip(), state['target_language'])
+               
             except Exception as e:
                 st.error(f"Error in BERTScore refinement: {str(e)}")
                 state['agent_notes'].append(f"{self.emoji} {self.name}: Error during refinement - {str(e)}")
                 break
-        
+       
         state['final_translation'] = current_text
-        
+       
         # INCREMENT INDEX
         state['current_agent_index'] = state.get('current_agent_index', 0) + 1
         return state
-
-
 # =====================
 # LLM Initialization Helper
 # =====================
-
 def initialize_llm(
     provider: Literal["openai", "anthropic"],
     model: str,
@@ -1380,12 +1332,9 @@ def initialize_llm(
         return ChatAnthropic(model=model, temperature=temperature, api_key=api_key, timeout=120)
     else:
         raise ValueError(f"Unsupported provider: {provider}")
-
-
 # =====================
 # LangSmith Setup
 # =====================
-
 def setup_langsmith(api_key: Optional[str], project_name: str = "translation-pipeline"):
     if not api_key:
         return False
@@ -1401,12 +1350,9 @@ def setup_langsmith(api_key: Optional[str], project_name: str = "translation-pip
     except Exception as e:
         st.error(f"LangSmith setup failed: {str(e)}")
         return False
-
-
 # =====================
 # Graph Construction WITH DYNAMIC ROUTING
 # =====================
-
 def build_translation_graph(llm: BaseChatModel) -> StateGraph:
     planning_agent = PlanningAgent(llm)
     literal_agent = LiteralTranslationAgent(llm)
@@ -1416,9 +1362,8 @@ def build_translation_graph(llm: BaseChatModel) -> StateGraph:
     literary_agent = LiteraryEditorAgent(llm)
     qc_agent = QualityControlAgent(llm)
     bertscore_agent = BERTScoreValidatorAgent(llm)
-
     workflow = StateGraph(TranslationState)
-    
+   
     workflow.add_node("planning", planning_agent.analyze_and_plan)
     workflow.add_node("literal_translator", literal_agent.translate)
     workflow.add_node("cultural_adapter", cultural_agent.adapt)
@@ -1427,9 +1372,9 @@ def build_translation_graph(llm: BaseChatModel) -> StateGraph:
     workflow.add_node("literary_editor", literary_agent.polish)
     workflow.add_node("finalize", qc_agent.finalize)
     workflow.add_node("bertscore_validator", bertscore_agent.validate_and_refine)
-    
+   
     workflow.set_entry_point("planning")
-    
+   
     workflow.add_conditional_edges("planning", route_to_next_agent)
     workflow.add_conditional_edges("literal_translator", route_to_next_agent)
     workflow.add_conditional_edges("cultural_adapter", route_to_next_agent)
@@ -1438,22 +1383,19 @@ def build_translation_graph(llm: BaseChatModel) -> StateGraph:
     workflow.add_conditional_edges("literary_editor", route_to_next_agent)
     workflow.add_conditional_edges("finalize", route_to_next_agent)
     workflow.add_conditional_edges("bertscore_validator", route_to_next_agent)
-
-    return workflow.compile()
-
-
+    checkpointer = MemorySaver()
+    return workflow.compile(checkpointer=checkpointer)
 # =====================
 # Streamlit UI
 # =====================
-
-def main():
+async def main():
     st.set_page_config(
         page_title="Advanced Translation System",
         page_icon="🌐",
         layout="wide",
         initial_sidebar_state="expanded"
     )
-    
+   
     # Initialize session state
     if 'translation_state' not in st.session_state:
         st.session_state.translation_state = None
@@ -1463,7 +1405,9 @@ def main():
         st.session_state.history = []
     if 'edited_translation' not in st.session_state:
         st.session_state.edited_translation = None
-    
+    if 'thread_id' not in st.session_state:
+        st.session_state.thread_id = f"thread_{datetime.now().timestamp()}"
+   
     # Entity tracker initialization
     if 'entity_tracker' not in st.session_state:
         st.session_state.entity_tracker = EntitiesTracker()
@@ -1471,7 +1415,7 @@ def main():
         st.session_state.enable_entity_tracking = False
     if 'enable_entity_awareness' not in st.session_state:
         st.session_state.enable_entity_awareness = False
-    
+   
     # Planning preferences
     if 'planning_enabled' not in st.session_state:
         st.session_state.planning_enabled = True
@@ -1485,7 +1429,6 @@ def main():
         st.session_state.force_literary_editor = False
     if 'force_bertscore_validator' not in st.session_state:
         st.session_state.force_bertscore_validator = False
-
     # Custom CSS
     st.markdown("""
     <style>
@@ -1514,29 +1457,24 @@ def main():
         .stTabs [data-baseweb="tab"] { padding: 10px 20px; }
     </style>
     """, unsafe_allow_html=True)
-
     st.title("🌐 Advanced Multi-Agent Translation System")
     st.caption("🎯 **NEW**: Intelligent Planning Agent - Dynamically optimizes workflow for each task!")
-
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Configuration")
-
         st.subheader("🤖 Model Provider")
         provider = st.radio(
             "Select Provider",
             ["openai", "anthropic"],
             format_func=lambda x: "OpenAI (GPT-4)" if x == "openai" else "Anthropic (Claude)"
         )
-
         st.subheader("🔑 API Keys")
         if provider == "openai":
             api_key = st.text_input("OpenAI API Key", type="password", help="Required for translation/refinement")
             model_options = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"]
         else:
             api_key = st.text_input("Anthropic API Key", type="password", help="Required for translation/refinement")
-            model_options = ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-opus-20240229"]
-
+            model_options = ["claude-3-5-sonnet-20241022", "claude-3-opus-20240229", "claude-3-haiku-20240307"]
         st.subheader("📊 Monitoring (Optional)")
         enable_langsmith = st.checkbox("Enable LangSmith Tracing", help="Track and monitor agent interactions")
         langsmith_key = None
@@ -1549,14 +1487,12 @@ def main():
                     st.success("✅ LangSmith enabled")
                 else:
                     st.warning("⚠️ LangSmith setup failed")
-
         st.divider()
         st.subheader("🎛️ Model Settings")
         model = st.selectbox("Model", model_options, index=0)
         temperature = st.slider("Temperature", 0.0, 1.0, 0.3, help="Lower = more conservative, Higher = more creative")
-
         st.divider()
-        
+       
         # Planning Controls
         st.subheader("📋 Intelligent Planning")
         st.session_state.planning_enabled = st.checkbox(
@@ -1564,12 +1500,12 @@ def main():
             value=st.session_state.planning_enabled,
             help="Let AI select optimal agents for each task"
         )
-        
+       
         if not st.session_state.planning_enabled:
             st.info("⚠️ Planning disabled - all agents will run")
         else:
             st.success("✅ Smart planning active - optimizing workflow")
-            
+           
             with st.expander("🎯 Manual Overrides", expanded=False):
                 st.caption("Force inclusion of specific agents:")
                 st.session_state.force_cultural_adapter = st.checkbox(
@@ -1593,7 +1529,7 @@ def main():
                     value=st.session_state.force_bertscore_validator,
                     help="Only applies to same-language refinement"
                 )
-        
+       
         st.divider()
         st.subheader("🌍 Translation Settings")
         source_lang = st.selectbox(
@@ -1609,11 +1545,9 @@ def main():
             ["English (US)","English (UK)","Spanish","French","German","Other"],
             help="Language to translate into"
         )
-
         same_lang_note = languages_equivalent(source_lang, target_lang)
         if same_lang_note:
             st.info("Same-language detected: running in **Refine mode** (copy-edit without changing meaning).")
-
         audience = st.selectbox(
             "Target Audience",
             [
@@ -1630,10 +1564,9 @@ def main():
             ],
             help="Type of content"
         )
-
         st.divider()
         show_charts = st.checkbox("Show analytics visualizations", value=True)
-        
+       
         # Entity Tracking Options
         st.divider()
         st.subheader("🎯 Entity Tracking")
@@ -1642,24 +1575,24 @@ def main():
             value=st.session_state.enable_entity_tracking,
             help="Track entities (people, places, organizations) through translation"
         )
-        
+       
         if st.session_state.enable_entity_tracking:
             st.session_state.enable_entity_awareness = st.checkbox(
                 "Entity-aware agents",
                 value=st.session_state.enable_entity_awareness,
                 help="Give translation agents awareness of important entities"
             )
-            
+           
             uploaded_glossary = st.file_uploader(
                 "Upload Entity Glossary",
                 type=['json', 'csv', 'txt'],
                 help="Upload a glossary of important terms to track"
             )
-            
+           
             if uploaded_glossary:
                 if st.session_state.entity_tracker.upload_glossary(uploaded_glossary):
                     st.success(f"✅ Glossary loaded")
-            
+           
             with st.expander("➕ Quick Add Term"):
                 new_term = st.text_input("Term name")
                 term_type = st.selectbox("Type", ["person", "location", "organization", "date", "custom"])
@@ -1673,12 +1606,10 @@ def main():
                         }
                         st.success(f"Added: {new_term}")
                         st.rerun()
-            
+           
             st.metric("Glossary Terms", len(st.session_state.entity_glossary))
-
     # Main content
     st.header(f"📝 Interface · {mode_phrase(source_lang, target_lang)}")
-
     with st.expander("📚 Learn About Our Translation Agents", expanded=False):
         st.markdown("### The Eight-Agent Pipeline (with Intelligent Planning)")
         for agent_key, agent_info in AGENT_DESCRIPTIONS.items():
@@ -1694,9 +1625,7 @@ def main():
             for idx, ex in enumerate(agent_info['expertise']):
                 cols[idx].info(ex)
             st.divider()
-
     col1, col2 = st.columns([1, 1])
-
     with col1:
         st.subheader("📄 Source Text")
         uploaded_file = st.file_uploader("Upload a file (optional)", type=['txt','docx','md'])
@@ -1713,7 +1642,6 @@ def main():
                 height=400,
                 placeholder="Paste your source text here…",
             )
-
         col_a, col_b = st.columns([3, 1])
         with col_a:
             translate_button = st.button(
@@ -1726,28 +1654,23 @@ def main():
             if st.button("🗑️ Clear", use_container_width=True):
                 st.session_state.translation_state = None
                 st.session_state.edited_translation = None
+                st.session_state.thread_id = f"thread_{datetime.now().timestamp()}"
                 st.rerun()
-
         if not api_key:
             st.warning("⚠️ Enter your API key in the sidebar to begin")
-
         if source_text:
             st.caption(f"📊 {len(source_text)} characters | ~{len(source_text.split())} words")
-
     with col2:
         st.subheader("🎯 Result")
-
         if translate_button and source_text:
             try:
                 status_container = st.empty()
                 progress_container = st.empty()
                 with status_container.container():
                     st.info("🔄 Initializing pipeline...")
-
                 llm = initialize_llm(provider=provider, model=model, api_key=api_key, temperature=temperature)
                 graph = build_translation_graph(llm)
                 st.session_state.graph = graph
-
                 current_time = datetime.now().isoformat()
                 initial_state = {
                     "source_text": source_text,
@@ -1784,35 +1707,41 @@ def main():
                     "current_agent_index": 0,
                     "planning_enabled": st.session_state.planning_enabled
                 }
-                
+               
                 if st.session_state.enable_entity_tracking:
                     entity_tracker = st.session_state.entity_tracker
                     source_entities = entity_tracker.extract_entities(source_text)
                     initial_state['source_entities'] = source_entities
                     initial_state['translated_entities'] = []
                     initial_state['entity_preservation_rate'] = 0.0
-                    
+                   
                     if source_entities:
                         st.info(f"🎯 Tracking {len(source_entities)} entities through translation")
                 else:
                     initial_state['source_entities'] = None
                     initial_state['translated_entities'] = None
                     initial_state['entity_preservation_rate'] = None
-
                 with status_container.container():
                     st.info("🔄 Planning workflow...")
                 with progress_container.container():
                     st.progress(0.05)
-
                 with status_container.container():
                     st.info("🔄 Running agents...")
-                result = graph.invoke(initial_state)
-
+                config = {"configurable": {"thread_id": st.session_state.thread_id}}
+                result = None
+                try:
+                    result = await graph.ainvoke(initial_state, config)
+                except Exception as inner_e:
+                    st.warning("Partial failure detected - attempting resume from checkpoint...")
+                    state_snapshot = graph.checkpointer.get_tuple(config)
+                    if state_snapshot:
+                        result = await graph.ainvoke(None, config)
+                    else:
+                        raise inner_e
                 status_container.empty()
                 progress_container.empty()
-
                 st.session_state.translation_state = result
-                st.session_state.edited_translation = result.get('final_translation', '')
+                st.session_state.edited_translation = result.get('final_translation', '') if result else ''
                 st.session_state.history.append({
                     "timestamp": datetime.now().isoformat(),
                     "source": source_text[:100] + "...",
@@ -1820,24 +1749,22 @@ def main():
                     "model": model,
                     "result": result
                 })
-
                 st.success("✅ Pipeline completed!")
                 st.rerun()
             except Exception as e:
                 st.error(f"❌ Error during processing: {str(e)}")
                 st.code(traceback.format_exc())
-
         if st.session_state.translation_state:
             state = st.session_state.translation_state
-            
+           
             # Display planning information
             if state.get('agent_plan'):
                 st.markdown("### 📋 Execution Plan")
-                
+               
                 plan = state.get('agent_plan', [])
                 skipped = state.get('skipped_agents', [])
                 complexity = state.get('estimated_complexity', 'unknown')
-                
+               
                 agent_names = {
                     'literal_translator': '🔤 Baseline',
                     'cultural_adapter': '🌍 Cultural',
@@ -1847,34 +1774,31 @@ def main():
                     'finalize': '✅ Finalize',
                     'bertscore_validator': '🎯 BERTScore'
                 }
-                
+               
                 col_info1, col_info2, col_info3 = st.columns(3)
                 with col_info1:
                     st.metric("Agents Used", f"{len(plan)}/7")
                 with col_info2:
                     savings = int((1 - len(plan) / 7) * 100)
-                    st.metric("Efficiency", f"{savings}%")
+                    st.metric("Efficiency Gain", f"{savings}%")
                 with col_info3:
                     st.metric("Complexity", complexity.title())
-                
+               
                 route_display = " → ".join([agent_names.get(a, a) for a in plan])
                 st.info(f"**Route:** {route_display}")
-                
+               
                 if skipped:
                     skipped_display = ", ".join([agent_names.get(a, a) for a in skipped])
                     st.caption(f"⏭️ **Skipped:** {skipped_display}")
-            
+           
             st.divider()
             st.markdown("### 📖 Final Output")
             display_text = st.session_state.edited_translation or state.get('final_translation', 'No output yet')
-
             st.text_area("Publication-Ready Text", display_text, height=400, key="final_display", label_visibility="visible")
-
             # Downloads
             st.markdown("### 📥 Download Options")
             col_x, col_y, col_z, col_w = st.columns(4)
             final_text = st.session_state.edited_translation or state.get('final_translation', '')
-
             with col_x:
                 st.download_button(
                     "📄 Text (.txt)", final_text,
@@ -1906,37 +1830,35 @@ def main():
                     file_name=f"translation_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                     mime="application/json", use_container_width=True
                 )
-
     # Detailed Analysis Tabs
     if st.session_state.translation_state:
         st.divider()
         st.header("🔍 Detailed Analysis")
         state = st.session_state.translation_state
-
         tab_names = [
             "📋 Planning","✏️ Edit & Review","🔄 Agent Workflow","📊 All Versions",
             "⚠️ Issues & Feedback","📈 Analytics","📚 History"
         ]
-        
+       
         if st.session_state.enable_entity_tracking:
             tab_names.append("🎯 Entities")
-        
+       
         tabs = st.tabs(tab_names)
-        
+       
         if len(tabs) == 8:
             tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7 = tabs
         else:
             tab0, tab1, tab2, tab3, tab4, tab5, tab6 = tabs
             tab7 = None
-        
+       
         # Planning Tab
         with tab0:
             st.subheader("Planning Analysis & Decisions")
-            
+           
             if state.get('agent_plan'):
                 reasoning = state.get('agent_plan_reasoning', {})
                 analysis = state.get('planning_analysis', {})
-                
+               
                 st.markdown("#### 📊 Text Analysis")
                 if analysis:
                     cols = st.columns(3)
@@ -1946,7 +1868,7 @@ def main():
                         cols[1].metric("Complexity", f"{analysis.get('complexity_score', 0):.1f}/10")
                     if 'technical_terms_count' in analysis:
                         cols[2].metric("Technical Terms", analysis.get('technical_terms_count', 0))
-                    
+                   
                     cols2 = st.columns(3)
                     if 'cultural_references_count' in analysis:
                         cols2[0].metric("Cultural Refs", analysis.get('cultural_references_count', 0))
@@ -1954,11 +1876,11 @@ def main():
                         cols2[1].metric("Tone", analysis.get('tone_consistency', 'N/A'))
                     if 'literary_elements' in analysis:
                         cols2[2].metric("Literary", analysis.get('literary_elements', 'N/A'))
-                
+               
                 st.divider()
                 st.markdown("#### 🎯 Agent Selection Reasoning")
-                
-                for agent_key in ['literal_translator', 'cultural_adapter', 'tone_specialist', 
+               
+                for agent_key in ['literal_translator', 'cultural_adapter', 'tone_specialist',
                                  'technical_reviewer', 'literary_editor', 'finalize', 'bertscore_validator']:
                     if agent_key in reasoning:
                         reason = reasoning[agent_key]
@@ -1968,7 +1890,6 @@ def main():
                             st.info(f"**{agent_key.replace('_', ' ').title()}:** {reason}")
             else:
                 st.info("Planning information not available")
-
         with tab1:
             st.subheader("Edit & Review")
             edited_text = st.text_area(
@@ -1979,7 +1900,6 @@ def main():
             if edited_text != st.session_state.edited_translation:
                 st.session_state.edited_translation = edited_text
                 st.success("✅ Edits saved")
-
             col_reset, col_apply = st.columns([1, 1])
             with col_reset:
                 if st.button("↺ Reset to Original", use_container_width=True):
@@ -1989,7 +1909,6 @@ def main():
                 if st.button("💾 Save Final Version", type="primary", use_container_width=True):
                     state['final_translation'] = st.session_state.edited_translation
                     st.success("✅ Final version saved!")
-
             st.divider()
             st.markdown("#### 🚩 Critical Passages")
             critical_passages = state.get('critical_passages', [])
@@ -2015,27 +1934,31 @@ def main():
                     st.divider()
             else:
                 st.success("✅ No critical passages flagged")
-
             review_notes = st.text_area("📝 Review Notes", placeholder="Enter notes/feedback…", height=150, key="review_notes")
             if st.button("💾 Save Review Notes"):
                 if 'review_notes' not in state:
                     state['review_notes'] = []
                 state['review_notes'].append({'timestamp': datetime.now().isoformat(), 'notes': review_notes})
                 st.success("✅ Review notes saved")
-
         with tab2:
             st.subheader("Agent Workflow Progress")
+            unique_notes = []
+            seen = set()
             for note in state.get('agent_notes', []):
+                if note not in seen:
+                    unique_notes.append(note)
+                    seen.add(note)
+            for note in unique_notes:
                 st.success(f"✓ {note}")
             st.divider()
             if state.get('started_at') and state.get('completed_at'):
                 try:
                     start = datetime.fromisoformat(state['started_at'])
                     end = datetime.fromisoformat(state['completed_at'])
-                    st.metric("Total Processing Time", f"{(end - start).total_seconds():.1f} seconds")
+                    duration = (end - start).total_seconds()
+                    st.metric("Total Processing Time", f"{duration:.1f} seconds")
                 except:
                     st.info("Processing time not available")
-
         with tab3:
             st.subheader("All Versions")
             versions = [
@@ -2050,7 +1973,6 @@ def main():
                 if content:
                     with st.expander(title, expanded=False):
                         st.text_area(f"{title} content", content, height=200, key=f"version_{title}", label_visibility="collapsed")
-
         with tab4:
             st.subheader("Issues & Feedback")
             all_issues = (
@@ -2071,10 +1993,8 @@ def main():
                 feedback = st.text_area("Provide feedback for revision", placeholder="Describe needed changes…")
                 if st.button("Submit Feedback"):
                     st.info("Feedback captured (extend workflow to loop back if desired).")
-
         with tab5:
             st.subheader("Analytics")
-
             col_a, col_b, col_c = st.columns(3)
             with col_a:
                 source_words = len(state['source_text'].split())
@@ -2085,10 +2005,8 @@ def main():
             with col_c:
                 total_issues = sum(len(state.get(k, [])) for k in ['literal_issues','cultural_issues','tone_issues','technical_issues','literary_issues'])
                 st.metric("Total Issues Addressed", total_issues)
-
             if show_charts:
                 st.divider()
-
                 with st.expander("Word Count Overview", expanded=True):
                     try:
                         df_counts = pd.DataFrame(
@@ -2097,15 +2015,12 @@ def main():
                         st.bar_chart(df_counts)
                     except Exception:
                         st.warning("Could not render word count chart.")
-
                 st.divider()
-
                 with st.expander("Sentence Length Distribution (words per sentence)", expanded=False):
                     src_lens = sentence_lengths(state.get('source_text', ''))
                     fin_lens = sentence_lengths(state.get('final_translation', ''))
                     max_len_for_bins = max([0] + src_lens + fin_lens)
                     bins = nonzero_bins(max_len_for_bins)
-
                     cols = st.columns(2)
                     with cols[0]:
                         st.caption("Source")
@@ -2118,7 +2033,6 @@ def main():
                             st.pyplot(fig1)
                         except Exception:
                             st.warning("Could not render source histogram.")
-
                     with cols[1]:
                         st.caption("Final")
                         try:
@@ -2130,47 +2044,38 @@ def main():
                             st.pyplot(fig2)
                         except Exception:
                             st.warning("Could not render final histogram.")
-
                 st.divider()
-
                 with st.expander("Word Clouds (Before / After / Difference)", expanded=True):
                     if not WORDCLOUD_AVAILABLE:
                         st.info("Install `wordcloud` to enable this: `pip install wordcloud`")
                     else:
                         sw = set(STOPWORDS) | {"—", "–", "'", """, """, "…"}
-
                         src_text = state.get('source_text', '')
                         fin_text = state.get('final_translation', '')
                         src_freq = word_frequencies(src_text, stopwords=sw)
                         fin_freq = word_frequencies(fin_text, stopwords=sw)
-
                         diff_freq = {}
                         for w, f_cnt in fin_freq.items():
                             s_cnt = src_freq.get(w, 0)
                             delta = f_cnt - s_cnt
                             if delta > 0:
                                 diff_freq[w] = delta
-
                         st.caption("Before (Source)")
                         try:
                             render_wordcloud_from_freq(src_freq, "Source Word Cloud")
                         except Exception:
                             st.warning("Could not render source word cloud.")
-
                         st.caption("After (Final)")
                         try:
                             render_wordcloud_from_freq(fin_freq, "Final Word Cloud")
                         except Exception:
                             st.warning("Could not render final word cloud.")
-
                         st.caption("Difference (Added Words)")
                         try:
                             render_wordcloud_from_freq(diff_freq, "Added Words Word Cloud")
                         except Exception:
                             st.warning("Could not render difference word cloud.")
-
                 st.divider()
-
                 with st.expander("Readability (Flesch Reading Ease)", expanded=False):
                     try:
                         import textstat
@@ -2181,9 +2086,7 @@ def main():
                         c2.metric("Final", f"{fre_fin:.1f}", delta=f"{fre_fin - fre_src:+.1f}")
                     except Exception:
                         st.info("Install `textstat` for readability: `pip install textstat`")
-
                 st.divider()
-
                 if languages_equivalent(state['source_language'], state['target_language']):
                     with st.expander("BERTScore (same-language refine mode)", expanded=True):
                         if not BERT_AVAILABLE:
@@ -2207,13 +2110,13 @@ def main():
                                     st.warning("BERTScore could not be computed.")
                             else:
                                 st.info("Provide both source and final text to compute BERTScore.")
-                        
+                       
                         if state.get('bertscore_history'):
                             st.divider()
                             st.markdown("#### 🎯 BERTScore Refinement History")
-                            
+                           
                             history_df = pd.DataFrame(state['bertscore_history'])
-                            
+                           
                             try:
                                 fig_history, ax_history = plt.subplots()
                                 ax_history.plot(history_df['attempt'], history_df['f1'], 'o-', label='F1', linewidth=2)
@@ -2227,15 +2130,13 @@ def main():
                                 ax_history.grid(True, alpha=0.3)
                                 ax_history.set_ylim(0, 1)
                                 st.pyplot(fig_history)
-                                
+                               
                                 st.caption(f"Total attempts: {len(history_df)} | Final F1: {history_df.iloc[-1]['f1']:.3f}")
                             except Exception:
                                 st.warning("Could not render BERTScore refinement history chart.")
                 else:
                     st.caption("BERTScore is only shown for same-language refine runs.")
-
                 st.divider()
-
                 with st.expander("Issues by Stage", expanded=False):
                     issue_counts = {
                         "Literal": len(state.get('literal_issues', [])),
@@ -2253,7 +2154,6 @@ def main():
                         st.warning("Could not render issues chart.")
             else:
                 st.info("Visualizations are disabled.")
-
         with tab6:
             st.subheader("History")
             if st.session_state.history:
@@ -2268,35 +2168,35 @@ def main():
                             st.rerun()
             else:
                 st.info("No history yet")
-        
+       
         # Entity Tab (only if enabled)
         if st.session_state.enable_entity_tracking and tab7:
             with tab7:
                 st.subheader("🎯 Entity Analysis & Tracking")
-                
+               
                 if state:
                     entity_tracker = st.session_state.entity_tracker
-                    
+                   
                     if 'source_entities' not in state or state['source_entities'] is None:
                         state['source_entities'] = entity_tracker.extract_entities(state.get('source_text', ''))
                     if 'translated_entities' not in state or state['translated_entities'] is None:
                         state['translated_entities'] = entity_tracker.extract_entities(state.get('final_translation', ''))
-                    
+                   
                     col1, col2 = st.columns(2)
-                    
+                   
                     with col1:
                         st.markdown("### 📖 Source Entities")
                         source_entities = state.get('source_entities', [])
-                        
+                       
                         if source_entities:
                             st.metric("Total Entities", len(source_entities))
-                            
+                           
                             entity_types = {}
                             for entity in source_entities:
                                 if entity['type'] not in entity_types:
                                     entity_types[entity['type']] = []
                                 entity_types[entity['type']].append(entity)
-                            
+                           
                             for entity_type, entities in entity_types.items():
                                 emoji = entity_tracker.entity_types[entity_type]['emoji']
                                 with st.expander(f"{emoji} {entity_type.capitalize()} ({len(entities)})"):
@@ -2307,20 +2207,20 @@ def main():
                                             st.caption(entity['description'])
                         else:
                             st.info("No entities detected in source")
-                    
+                   
                     with col2:
                         st.markdown("### 📝 Translated Entities")
                         translated_entities = state.get('translated_entities', [])
-                        
+                       
                         if translated_entities:
                             st.metric("Total Entities", len(translated_entities))
-                            
+                           
                             entity_types = {}
                             for entity in translated_entities:
                                 if entity['type'] not in entity_types:
                                     entity_types[entity['type']] = []
                                 entity_types[entity['type']].append(entity)
-                            
+                           
                             for entity_type, entities in entity_types.items():
                                 emoji = entity_tracker.entity_types[entity_type]['emoji']
                                 with st.expander(f"{emoji} {entity_type.capitalize()} ({len(entities)})"):
@@ -2331,33 +2231,33 @@ def main():
                                             st.caption(entity['description'])
                         else:
                             st.info("No entities detected in translation")
-                    
+                   
                     if source_entities and translated_entities:
                         st.divider()
                         st.markdown("### 📊 Entity Preservation Analysis")
-                        
+                       
                         source_names = {e['name'].lower() for e in source_entities}
                         translated_names = {e['name'].lower() for e in translated_entities}
-                        
+                       
                         preserved = source_names & translated_names
                         lost = source_names - translated_names
                         added = translated_names - source_names
-                        
+                       
                         col1, col2, col3, col4 = st.columns(4)
-                        
+                       
                         with col1:
                             preservation_rate = len(preserved) / len(source_names) * 100 if source_names else 0
                             st.metric("Preservation Rate", f"{preservation_rate:.1f}%")
-                        
+                       
                         with col2:
                             st.metric("Preserved", len(preserved))
-                        
+                       
                         with col3:
                             st.metric("Lost", len(lost))
-                        
+                       
                         with col4:
                             st.metric("Added", len(added))
-                        
+                       
                         if lost:
                             with st.expander(f"⚠️ Lost Entities ({len(lost)})", expanded=len(lost) <= 5):
                                 for name in list(lost)[:30]:
@@ -2365,7 +2265,7 @@ def main():
                                     if entity:
                                         emoji = entity_tracker.entity_types[entity['type']]['emoji']
                                         st.write(f"{emoji} {entity['name']}")
-                        
+                       
                         if added:
                             with st.expander(f"➕ Added Entities ({len(added)})"):
                                 for name in list(added)[:30]:
@@ -2373,16 +2273,16 @@ def main():
                                     if entity:
                                         emoji = entity_tracker.entity_types[entity['type']]['emoji']
                                         st.write(f"{emoji} {entity['name']}")
-                        
+                       
                         st.divider()
                         st.markdown("### 🌐 Entity Network Visualization")
-                        
+                       
                         viz_choice = st.radio(
                             "Select entities to visualize",
                             ["Source Entities", "Translated Entities", "All Entities"],
                             horizontal=True
                         )
-                        
+                       
                         if viz_choice == "Source Entities":
                             viz_entities = source_entities[:30]
                         elif viz_choice == "Translated Entities":
@@ -2393,14 +2293,14 @@ def main():
                                 if e['name'] not in all_entities:
                                     all_entities[e['name']] = e
                             viz_entities = list(all_entities.values())[:30]
-                        
+                       
                         if viz_entities:
                             entity_tracker.visualize_network(viz_entities)
-                        
+                       
                         if PLOTLY_AVAILABLE:
                             st.divider()
                             st.markdown("### 📈 Entity Frequency Comparison")
-                            
+                           
                             all_entity_names = {}
                             for e in source_entities:
                                 all_entity_names[e['name']] = {'source': e['count'], 'translated': 0, 'type': e['type']}
@@ -2409,11 +2309,11 @@ def main():
                                     all_entity_names[e['name']]['translated'] = e['count']
                                 else:
                                     all_entity_names[e['name']] = {'source': 0, 'translated': e['count'], 'type': e['type']}
-                            
-                            sorted_entities = sorted(all_entity_names.items(), 
-                                                   key=lambda x: x[1]['source'] + x[1]['translated'], 
+                           
+                            sorted_entities = sorted(all_entity_names.items(),
+                                                   key=lambda x: x[1]['source'] + x[1]['translated'],
                                                    reverse=True)[:20]
-                            
+                           
                             if sorted_entities:
                                 df_data = []
                                 for name, counts in sorted_entities:
@@ -2422,9 +2322,9 @@ def main():
                                         'Source': counts['source'],
                                         'Translated': counts['translated']
                                     })
-                                
+                               
                                 df = pd.DataFrame(df_data)
-                                
+                               
                                 fig = go.Figure()
                                 fig.add_trace(go.Bar(
                                     name='Source',
@@ -2440,7 +2340,7 @@ def main():
                                     orientation='h',
                                     marker_color='#10b981'
                                 ))
-                                
+                               
                                 fig.update_layout(
                                     title='Top 20 Entities: Source vs Translated',
                                     xaxis_title='Occurrences',
@@ -2448,11 +2348,9 @@ def main():
                                     height=600,
                                     margin=dict(l=150)
                                 )
-                                
+                               
                                 st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.info("Complete a translation to see entity analysis")
-
-
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
