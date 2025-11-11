@@ -28,8 +28,8 @@ technical verification, and literary editing, producing texts that read as if th
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/matthewrobertmac/multi-agent-translation.git
-cd multi-agent-translation
+git clone https://github.com/matthewrobertmac/enhanced-translation-system.git
+cd enhanced-translation-system
 
 # 2. Create a virtual environment
 python3 -m venv .venv
