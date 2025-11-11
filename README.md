@@ -39,3 +39,6 @@ source .venv/bin/activate    # On macOS/Linux
 # 3. Install dependencies
 pip install -r requirements.txt
 
+# 4. Run Streamlit App
+streamlit run enhanced-translation-system
+
