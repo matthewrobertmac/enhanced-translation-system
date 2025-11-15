@@ -244,20 +244,23 @@ async def main():
                 )
         
         st.divider()
-        
+        LANGUAGE_OPTIONS = [
+        "English (US)", "English (UK)", 
+        "Spanish", "French", "German", "Italian", 
+        "Portuguese", "Romanian", "Polish", "Ukrainian", 
+        "Russian", "Czech", "Slovak", "Bulgarian", "Dutch",
+        "Other"
+        ]
         st.subheader("🌍 Translation Settings")
         source_lang = st.selectbox(
             "Source Language",
-            [
-                "Ukrainian","Russian","Polish","German","French","Spanish","Italian","Portuguese",
-                "English (US)","English (UK)","Romanian","Czech","Slovak","Bulgarian","Dutch","Other",
-            ],
+            LANGUAGE_OPTIONS,
             help="Language of the source text"
         )
         
         target_lang = st.selectbox(
             "Target Language",
-            ["English (US)","English (UK)","Spanish","French","German","Other"],
+            LANGUAGE_OPTIONS,
             help="Language to translate into"
         )
         
