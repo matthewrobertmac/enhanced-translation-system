@@ -4,10 +4,73 @@
 # =====================
 import streamlit as st
 import asyncio
+import matplotlib.pyplot as plt
 from datetime import datetime
 from backend import *
+from multilingual_stopwords import MULTILINGUAL_STOPWORDS
 
-async def main():
+# ==========================
+# WORDCLOUD + FREQUENCY UTILITIES FUNCTIONS
+# ==========================
+def wordcloud_frequencies(text, stopwords):
+    """
+    Compute word frequency dictionary after removing stopwords.
+    Handles Unicode punctuation, normalizes tokens, and filters properly.
+    """
+    if not text:
+        return {}
+    import re
+    import unicodedata
+    # Normalize accents and unicode punctuation
+    text = unicodedata.normalize("NFKC", text)
+    # Replace all punctuation (including smart quotes) with spaces
+    text = re.sub(r"[^\w\s-]", " ", text)
+    # Lowercase
+    text = text.lower()
+    # Split into tokens
+    words = text.split()
+    freq = {}
+    
+    for w in words:
+        # Remove leading/trailing hyphens
+        w = w.strip("-")
+        # Skip stopwords and short garbage tokens
+        if len(w) <= 1:
+            continue
+        if w in stopwords:
+            continue
+        freq[w] = freq.get(w, 0) + 1
+    return freq
+
+def render_wordcloud_from_freq(freq_dict, title="Word Cloud"):
+    """
+    Render a wordcloud based on a frequency dictionary.
+    """
+    from wordcloud import WordCloud
+    import matplotlib.pyplot as plt
+
+    if not freq_dict:
+        st.info("No data to render word cloud.")
+        return
+
+    try:
+        wc = WordCloud(
+            width=800,
+            height=400,
+            background_color="white",
+            colormap="viridis"
+        ).generate_from_frequencies(freq_dict)
+
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.imshow(wc, interpolation="bilinear")
+        ax.axis("off")
+        st.pyplot(fig)
+
+    except Exception as e:
+        st.warning(f"Could not render word cloud: {str(e)}")
+
+
+def main():
     st.set_page_config(
         page_title="Advanced Translation System",
         page_icon="🌐",
@@ -17,17 +80,22 @@ async def main():
     )
     
     # Initialize session state
-    if 'translation_state' not in st.session_state:
+        # Initialize session state keys
+    if "translation_state" not in st.session_state:
         st.session_state.translation_state = None
-    if 'graph' not in st.session_state:
-        st.session_state.graph = None
-    if 'history' not in st.session_state:
+    if "history" not in st.session_state:
         st.session_state.history = []
-    if 'edited_translation' not in st.session_state:
-        st.session_state.edited_translation = None
-    if 'thread_id' not in st.session_state:
-        st.session_state.thread_id = f"thread_{datetime.now().timestamp()}"
-    
+    if "graph" not in st.session_state:
+        st.session_state.graph = None
+    if "edited_translation" not in st.session_state:
+        st.session_state.edited_translation = ""
+    if "alternatives" not in st.session_state:
+        st.session_state.alternatives = None
+    if "enable_entity_tracking" not in st.session_state:
+        st.session_state.enable_entity_tracking = False
+    if "entity_tracker" not in st.session_state:
+        st.session_state.entity_tracker = None
+
     # Cache initialization
     if 'translation_cache' not in st.session_state:
         st.session_state.translation_cache = SemanticTranslationCache()
@@ -481,7 +549,11 @@ async def main():
                     st.progress(0.10)
                 
                 # 5) Run pipeline (backend is async, main() is async, so we can await)
-                result = await pipeline.run(initial_state)
+                async def _run_pipeline():
+                    return await pipeline.run(initial_state)
+
+                result = asyncio.run(_run_pipeline())
+
                 
                 # 6) Save state and history
                 st.session_state.translation_state = result
@@ -534,12 +606,18 @@ async def main():
                 result = None
                 
                 try:
-                    result = await graph.ainvoke(initial_state, config)
+                    async def _run_graph():
+                        return await graph.ainvoke(initial_state, config)
+
+                    result = asyncio.run(_run_graph())
                 except Exception as inner_e:
                     st.warning("Partial failure detected - attempting resume from checkpoint...")
                     state_snapshot = graph.checkpointer.get_tuple(config)
                     if state_snapshot:
-                        result = await graph.ainvoke(None, config)
+                        async def _run_graph_none():
+                            return await graph.ainvoke(None, config)
+
+                        result = asyncio.run(_run_graph_none())
                     else:
                         raise inner_e
                 
@@ -673,66 +751,87 @@ async def main():
                     file_name=f"translation_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
                     mime="application/json", use_container_width=True
                 )
-    
+        # ==========================
     # Detailed Analysis Tabs
-    if st.session_state.translation_state:
+    # ==========================
+
+    if st.session_state.get("translation_state"):
         st.divider()
         st.header("🔍 Detailed Analysis")
-        
+
         state = st.session_state.translation_state
-        
+
+        # ---- Tab Names ----
         tab_names = [
-            "🎯 Confidence","🔀 Diff Viewer","🎲 Alternatives",
-            "⚡ Cache","📋 Planning","✏️ Edit & Review","🔄 Agent Workflow",
-            "📊 All Versions","⚠️ Issues & Feedback","📈 Analytics","📚 History"
+            "🎯 Confidence",
+            "🔀 Diff Viewer",
+            "🎲 Alternatives",
+            "⚡ Cache",
+            "📋 Planning",
+            "✏️ Edit & Review",
+            "🔄 Agent Workflow",
+            "📊 All Versions",
+            "⚠️ Issues & Feedback",
+            "📈 Analytics",
+            "📚 History"
         ]
-        
-        if st.session_state.enable_entity_tracking:
+
+        # Add Entities tab IF enabled
+        if st.session_state.get("enable_entity_tracking", False):
             tab_names.append("🎯 Entities")
-        
-        tabs = st.tabs(tab_names)
-        
-        # Unpack tabs
-        if len(tabs) == 12:
-            (tab_confidence, tab_diff, tab_alternatives, tab_cache, tab_planning, 
-             tab_edit, tab_workflow, tab_versions, tab_issues, tab_analytics, 
-             tab_history, tab_entities) = tabs
-        else:
-            (tab_confidence, tab_diff, tab_alternatives, tab_cache, tab_planning, 
-             tab_edit, tab_workflow, tab_versions, tab_issues, tab_analytics, 
-             tab_history) = tabs
-            tab_entities = None
-        
-        # NEW: Confidence Tab
+
+        # ---- Create Tabs ----
+        tab_objects = st.tabs(tab_names)
+
+        # ---- Assign Tabs Safely ----
+        tab_confidence      = tab_objects[0]
+        tab_diff            = tab_objects[1]
+        tab_alternatives    = tab_objects[2]
+        tab_cache           = tab_objects[3]
+        tab_planning        = tab_objects[4]
+        tab_edit            = tab_objects[5]
+        tab_workflow        = tab_objects[6]
+        tab_all_versions    = tab_objects[7]
+        tab_issues          = tab_objects[8]
+        tab_analytics       = tab_objects[9]
+        tab_history         = tab_objects[10]
+
+        # Optional Entities tab
+        if len(tab_objects) > 11:
+            tab_entities = tab_objects[11]
+
+        # ==========================
+        # Confidence Tab
+        # ==========================
         with tab_confidence:
             st.subheader("🎯 Translation Confidence Scores")
-            
+
             if state.get('confidence_scores'):
                 confidence = state['confidence_scores']
-                
+
                 # Overall score display
                 overall = confidence['overall']
-                
+
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
-                    st.metric("Overall", f"{overall:.1%}", 
-                             help="Weighted average of all metrics")
+                    st.metric("Overall", f"{overall:.1%}",
+                              help="Weighted average of all metrics")
                 with col2:
                     st.metric("Fluency", f"{confidence.get('fluency', 0.5):.1%}",
-                             help="Natural language quality")
+                              help="Natural language quality")
                 with col3:
                     st.metric("Semantic Fidelity", f"{confidence.get('semantic_fidelity', 0.5):.1%}",
-                             help="Meaning preservation (BERTScore)")
+                              help="Meaning preservation (BERTScore)")
                 with col4:
                     st.metric("Terminology", f"{confidence.get('terminology', 1.0):.1%}",
-                             help="Key term preservation")
-                
+                              help="Key term preservation")
+ 
                 # Visual gauge
                 if PLOTLY_AVAILABLE:
                     st.divider()
                     st.markdown("### 📊 Confidence Visualization")
                     
-                    # Gauge chart
+                # Gauge chart
                     fig = go.Figure(go.Indicator(
                         mode = "gauge+number",
                         value = overall * 100,
@@ -747,9 +846,9 @@ async def main():
                                 {'range': [75, 100], 'color': "lightgreen"}
                             ],
                             'threshold': {
-                                'line': {'color': "red", 'width': 4},
-                                'thickness': 0.75,
-                                'value': 80
+                            'line': {'color': "red", 'width': 4},
+                            'thickness': 0.75,
+                            'value': 80
                             }
                         }
                     ))
@@ -780,8 +879,8 @@ async def main():
                         yaxis_range=[0, 100],
                         showlegend=False
                     )
-                    st.plotly_chart(fig2, use_container_width=True)
-                
+            
+                st.plotly_chart(fig2, use_container_width=True)
                 # Interpretation guide
                 st.divider()
                 st.markdown("### 📖 Score Interpretation")
@@ -917,7 +1016,11 @@ async def main():
                         try:
                             llm = initialize_llm(provider=provider, model=model, api_key=api_key, temperature=temperature)
                             generator = AlternativeTranslationGenerator(llm)
-                            alternatives = await generator.generate_alternatives(state, num_alts)
+                            async def _generate():
+                                return await generator.generate_alternatives(state, num_alts)
+                    
+                            alternatives = asyncio.run(_generate())
+
                             st.session_state.alternatives = alternatives
                             st.success(f"✅ Generated {len(alternatives)} alternatives")
                             st.rerun()
@@ -1158,7 +1261,7 @@ async def main():
                     st.info("Processing time not available")
         
         # All Versions Tab
-        with tab_versions:
+        with tab_all_versions:
             st.subheader("📊 All Versions")
             versions = [
                 ("1️⃣ Baseline", state.get('literal_translation','')),
@@ -1202,7 +1305,7 @@ async def main():
         with tab_analytics:
             st.subheader("📈 Analytics")
             col_a, col_b, col_c = st.columns(3)
-            
+
             with col_a:
                 source_words = len(state['source_text'].split())
                 final_words = len(state.get('final_translation','').split())
@@ -1212,7 +1315,7 @@ async def main():
             with col_c:
                 total_issues = sum(len(state.get(k, [])) for k in ['literal_issues','cultural_issues','tone_issues','technical_issues','literary_issues'])
                 st.metric("Total Issues Addressed", total_issues)
-            
+
             if show_charts:
                 st.divider()
                 with st.expander("📊 Word Count Overview", expanded=True):
@@ -1223,14 +1326,14 @@ async def main():
                         st.bar_chart(df_counts)
                     except Exception:
                         st.warning("Could not render word count chart.")
-                
+
                 st.divider()
                 with st.expander("📏 Sentence Length Distribution (words per sentence)", expanded=False):
                     src_lens = sentence_lengths(state.get('source_text', ''))
                     fin_lens = sentence_lengths(state.get('final_translation', ''))
                     max_len_for_bins = max([0] + src_lens + fin_lens)
                     bins = nonzero_bins(max_len_for_bins)
-                    
+
                     cols = st.columns(2)
                     with cols[0]:
                         st.caption("Source")
@@ -1242,7 +1345,7 @@ async def main():
                             ax1.set_title("Source")
                             st.pyplot(fig1)
                         except Exception:
-                            st.warning("Could not render source histogram.")
+                             st.warning("Could not render source histogram.")
                     with cols[1]:
                         st.caption("Final")
                         try:
@@ -1254,44 +1357,56 @@ async def main():
                             st.pyplot(fig2)
                         except Exception:
                             st.warning("Could not render final histogram.")
-                
+
                 st.divider()
                 with st.expander("☁️ Word Clouds (Before / After / Difference)", expanded=True):
                     if not WORDCLOUD_AVAILABLE:
                         st.info("Install `wordcloud` to enable this: `pip install wordcloud`")
                     else:
-                        sw = set(STOPWORDS) | {"—", "–", "'", """, """, "…"}
-                        src_text = state.get('source_text', '')
+                        # Detect target language for stopwords
+                        lang = state.get("target_language", "English (US)")
+
+                        # Normalize English variants
+                        if lang == "English (UK)":
+                            lang = "English (US)"
+
+                        # Load multilingual stopwords (your new file)
+                        custom_sw = MULTILINGUAL_STOPWORDS.get(lang, set())
+
+                        # Final merged stopword set (remove punctuation artifacts)
+                        sw = set(custom_sw) | {"—", "–", "'", '"', "…"}
+
+                        # Extract texts
+                        src_text = state.get('source_text', '')                              
                         fin_text = state.get('final_translation', '')
-                        
-                        src_freq = word_frequencies(src_text, stopwords=sw)
-                        fin_freq = word_frequencies(fin_text, stopwords=sw)
-                        
+                            # Compute frequency maps
+                        src_freq = wordcloud_frequencies(src_text, stopwords=sw)
+                        fin_freq = wordcloud_frequencies(fin_text, stopwords=sw)
                         diff_freq = {}
                         for w, f_cnt in fin_freq.items():
                             s_cnt = src_freq.get(w, 0)
                             delta = f_cnt - s_cnt
                             if delta > 0:
                                 diff_freq[w] = delta
-                        
+                   
                         st.caption("Before (Source)")
                         try:
                             render_wordcloud_from_freq(src_freq, "Source Word Cloud")
                         except Exception:
                             st.warning("Could not render source word cloud.")
-                        
+
                         st.caption("After (Final)")
                         try:
                             render_wordcloud_from_freq(fin_freq, "Final Word Cloud")
                         except Exception:
                             st.warning("Could not render final word cloud.")
-                        
+
                         st.caption("Difference (Added Words)")
                         try:
                             render_wordcloud_from_freq(diff_freq, "Added Words Word Cloud")
                         except Exception:
                             st.warning("Could not render difference word cloud.")
-                
+
                 st.divider()
                 with st.expander("📖 Readability (Flesch Reading Ease)", expanded=False):
                     try:
@@ -1303,7 +1418,7 @@ async def main():
                         c2.metric("Final", f"{fre_fin:.1f}", delta=f"{fre_fin - fre_src:+.1f}")
                     except Exception:
                         st.info("Install `textstat` for readability: `pip install textstat`")
-                
+
                 st.divider()
                 if languages_equivalent(state['source_language'], state['target_language']):
                     with st.expander("🎯 BERTScore (same-language refine mode)", expanded=True):
@@ -1317,7 +1432,7 @@ async def main():
                                 if bs:
                                     try:
                                         fig3, ax3 = plt.subplots()
-                                        ax3.barh(["Precision", "Recall", "F1"], [bs["precision"], bs["recall"], bs["f1"]])
+                                        ax3.barh(["Precision", "Recall", "F1"], [bs["precision"],bs["recall"], bs["f1"]])
                                         ax3.set_xlim(0, 1)
                                         ax3.set_xlabel("Score")
                                         ax3.set_title("BERTScore")
@@ -1328,53 +1443,53 @@ async def main():
                                     st.warning("BERTScore could not be computed.")
                             else:
                                 st.info("Provide both source and final text to compute BERTScore.")
-                        
-                        if state.get('bertscore_history'):
-                            st.divider()
-                            st.markdown("#### 🎯 BERTScore Refinement History")
-                            
-                            history_df = pd.DataFrame(state['bertscore_history'])
-                            
-                            try:
-                                fig_history, ax_history = plt.subplots()
-                                ax_history.plot(history_df['attempt'], history_df['f1'], 'o-', label='F1', linewidth=2)
-                                ax_history.plot(history_df['attempt'], history_df['precision'], 's-', label='Precision', alpha=0.7)
-                                ax_history.plot(history_df['attempt'], history_df['recall'], '^-', label='Recall', alpha=0.7)
-                                ax_history.axhline(y=0.8, color='r', linestyle='--', label='Target (0.8)')
-                                ax_history.set_xlabel('Refinement Attempt')
-                                ax_history.set_ylabel('Score')
-                                ax_history.set_title('BERTScore Evolution')
-                                ax_history.legend()
-                                ax_history.grid(True, alpha=0.3)
-                                ax_history.set_ylim(0, 1)
-                                st.pyplot(fig_history)
                                 
-                                st.caption(f"Total attempts: {len(history_df)} | Final F1: {history_df.iloc[-1]['f1']:.3f}")
+                            if state.get('bertscore_history'):
+                                st.divider()
+                                st.markdown("#### 🎯 BERTScore Refinement History")
+
+                                history_df = pd.DataFrame(state['bertscore_history'])
+
+                                try:
+                                    fig_history, ax_history = plt.subplots()
+                                    ax_history.plot(history_df['attempt'], history_df['f1'], 'o-', label='F1', linewidth=2)
+                                    ax_history.plot(history_df['attempt'], history_df['precision'], 's-', label='Precision', alpha=0.7)                                        
+                                    ax_history.plot(history_df['attempt'], history_df['recall'], '^-', label='Recall', alpha=0.7)
+                                    ax_history.axhline(y=0.8, color='r', linestyle='--', label='Target (0.8)')
+                                    ax_history.set_xlabel('Refinement Attempt')
+                                    ax_history.set_ylabel('Score')
+                                    ax_history.set_title('BERTScore Evolution')
+                                    ax_history.legend()
+                                    ax_history.grid(True, alpha=0.3)
+                                    ax_history.set_ylim(0, 1)
+                                    st.pyplot(fig_history)
+
+                                    st.caption(f"Total attempts: {len(history_df)} | Final F1: {history_df.iloc[-1]['f1']:.3f}")
+                                except Exception:
+                                    st.warning("Could not render BERTScore refinement history chart.")
+                            else:
+                                st.caption("BERTScore is only shown for same-language refine runs.")
+
+                        st.divider()
+                        with st.expander("📋 Issues by Stage", expanded=False):
+                            issue_counts = {
+                                "Literal": len(state.get('literal_issues', [])),
+                                "Cultural/Register": len(state.get('cultural_issues', [])),
+                                "Tone": len(state.get('tone_issues', [])),
+                                "Technical": len(state.get('technical_issues', [])),
+                                "Literary": len(state.get('literary_issues', [])),
+                            }
+                            try:
+                                df_issues = pd.DataFrame(
+                                    {"Stage": list(issue_counts.keys()), "Count": list(issue_counts.values())}
+                                ).set_index("Stage")
+                                st.bar_chart(df_issues)
                             except Exception:
-                                st.warning("Could not render BERTScore refinement history chart.")
-                else:
-                    st.caption("BERTScore is only shown for same-language refine runs.")
-                
-                st.divider()
-                with st.expander("📋 Issues by Stage", expanded=False):
-                    issue_counts = {
-                        "Literal": len(state.get('literal_issues', [])),
-                        "Cultural/Register": len(state.get('cultural_issues', [])),
-                        "Tone": len(state.get('tone_issues', [])),
-                        "Technical": len(state.get('technical_issues', [])),
-                        "Literary": len(state.get('literary_issues', [])),
-                    }
-                    try:
-                        df_issues = pd.DataFrame(
-                            {"Stage": list(issue_counts.keys()), "Count": list(issue_counts.values())}
-                        ).set_index("Stage")
-                        st.bar_chart(df_issues)
-                    except Exception:
-                        st.warning("Could not render issues chart.")
+                                st.warning("Could not render issues chart.")
             else:
                 st.info("Visualizations are disabled.")
-        
-        # History Tab
+
+# History Tab
         with tab_history:
             st.subheader("📚 History")
             if st.session_state.history:
@@ -1575,4 +1690,4 @@ async def main():
                     st.info("Complete a translation to see entity analysis")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
