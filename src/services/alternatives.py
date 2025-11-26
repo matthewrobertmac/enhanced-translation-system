@@ -1,7 +1,7 @@
 # src/services/alternatives.py
 from typing import List, Dict
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 from src.config import LANGUAGE_GUARDRAIL
 from src.utils.common import languages_equivalent
 
