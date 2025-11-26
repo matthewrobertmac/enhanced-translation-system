@@ -3,7 +3,6 @@ from typing import List, Dict
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from src.config import LANGUAGE_GUARDRAIL
-from src.utils.common import languages_equivalent
 
 class AlternativeTranslationGenerator:
     """Generate alternative translation variants with different temperature settings."""
