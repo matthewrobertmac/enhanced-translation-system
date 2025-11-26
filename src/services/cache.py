@@ -58,13 +58,13 @@ class SemanticTranslationCache:
         return self.embeddings.get(text_hash)
     
     def hash_text(self, text: str) -> str:
-        return hashlib.md5(text.encode()).hexdigest()
+        return hashlib.sha256(text.encode()).hexdigest()
     
     def make_cache_key(self, text: str, context: dict) -> str:
         """Create a unique key combining text hash and context hash."""
         context_str = f"{context.get('source_lang')}_{context.get('target_lang')}_{context.get('audience')}_{context.get('genre')}"
         text_hash = self.hash_text(text)
-        return f"{text_hash}_{hashlib.md5(context_str.encode()).hexdigest()}"
+        return f"{text_hash}_{hashlib.sha256(context_str.encode()).hexdigest()}"
     
     def context_matches(self, cached_context: dict, query_context: dict) -> bool:
         return (
