@@ -5,7 +5,7 @@ import asyncio
 # --- Module Imports (The Refactored Structure) ---
 from src.ui.styles import apply_custom_styles
 from src.ui.session import initialize_session_state
-from src.core.llm import initialize_llm, setup_langsmith
+from src.core.llm import initialize_llm
 from src.agents.workflow import TranslationPipeline
 from src.services.alternatives import AlternativeTranslationGenerator
 from src.utils.common import mode_phrase, languages_equivalent
