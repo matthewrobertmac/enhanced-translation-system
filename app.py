@@ -3,7 +3,6 @@ import streamlit as st
 import asyncio
 
 # --- Module Imports (The Refactored Structure) ---
-from src.config import AGENT_DESCRIPTIONS
 from src.ui.styles import apply_custom_styles
 from src.ui.session import initialize_session_state
 from src.core.llm import initialize_llm, setup_langsmith
