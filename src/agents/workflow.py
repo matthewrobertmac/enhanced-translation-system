@@ -4,6 +4,17 @@ from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.language_models import BaseChatModel
 
 from src.core.state import TranslationState
+
+# LangGraph Checkpointing Configuration Keys
+# These keys are expected by LangGraph's checkpointing system:
+# - "configurable": A nested dict containing checkpoint-related settings
+# - "thread_id": Unique identifier for the conversation/execution thread
+# - "checkpoint_ns": Namespace for checkpoints, used to isolate different workflows
+# See: https://langchain-ai.github.io/langgraph/concepts/persistence/
+LANGGRAPH_CONFIG_THREAD_ID_KEY = "thread_id"
+LANGGRAPH_CONFIG_CHECKPOINT_NS_KEY = "checkpoint_ns"
+DEFAULT_THREAD_ID = "default_thread"
+DEFAULT_CHECKPOINT_NAMESPACE = "translation"
 from src.services.cache import SemanticTranslationCache
 from src.services.entities import EntitiesTracker
 from src.agents.workers import (
@@ -89,13 +100,22 @@ class TranslationPipeline:
     async def run(self, state: TranslationState):
         """
         Execute the workflow.
+        
+        The config dictionary uses LangGraph's checkpointing system keys:
+        - thread_id: Unique identifier for execution thread (for state persistence)
+        - checkpoint_ns: Namespace to isolate checkpoints from different workflows
+        
+        These keys are wrapped in "configurable" as required by LangGraph.
         """
         app = self.build_workflow()
         
-        # Ensure thread_id exists for checkpointing
+        # Build configuration for LangGraph checkpointing
+        # The "configurable" wrapper is required by LangGraph's invoke API
         config = {
-            "thread_id": state.get("thread_id", "default_thread"),
-            "checkpoint_ns": "translation"
+            "configurable": {
+                LANGGRAPH_CONFIG_THREAD_ID_KEY: state.get("thread_id", DEFAULT_THREAD_ID),
+                LANGGRAPH_CONFIG_CHECKPOINT_NS_KEY: DEFAULT_CHECKPOINT_NAMESPACE
+            }
         }
         
         return await app.ainvoke(state, config=config)
