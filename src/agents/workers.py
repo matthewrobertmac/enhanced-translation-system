@@ -1,6 +1,5 @@
 # src/agents/workers.py
 import json
-import re
 from datetime import datetime
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.language_models import BaseChatModel
