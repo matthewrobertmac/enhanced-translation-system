@@ -8,7 +8,7 @@ from src.ui.session import initialize_session_state
 from src.core.llm import initialize_llm
 from src.agents.workflow import TranslationPipeline
 from src.services.alternatives import AlternativeTranslationGenerator
-from src.utils.common import mode_phrase, languages_equivalent
+# from src.utils.common import mode_phrase, languages_equivalent
 from src.utils.files import read_uploaded_file, create_docx_file, create_markdown_file
 from src.analysis.visualizations import (
     create_diff_visualization, render_wordcloud, compute_frequencies, 
