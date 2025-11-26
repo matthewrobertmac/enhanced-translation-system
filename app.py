@@ -242,8 +242,24 @@ def main():
             # Handle language mapping simply
             lang_key = source_lang if "English" in source_lang else source_lang.split()[0]
             sw = MULTILINGUAL_STOPWORDS.get(lang_key, set())
-            
-            col_wc1, col_wc2 = st.columns(2)
+            # Robust language mapping using explicit dictionary
+            LANGUAGE_KEY_MAP = {
+                "English": "english",
+                "French": "french",
+                "German": "german",
+                "Spanish": "spanish",
+                "Spanish (Latin America)": "spanish",
+                "Portuguese": "portuguese",
+                "Portuguese (Brazil)": "portuguese",
+                "Chinese Simplified": "chinese_simplified",
+                "Chinese Traditional": "chinese_traditional",
+                "Italian": "italian",
+                "Russian": "russian",
+                "Japanese": "japanese",
+                "Korean": "korean",
+                # Add more mappings as needed
+            }
+            lang_key = LANGUAGE_KEY_MAP.get(source_lang, source_lang.split()[0].lower())
             with col_wc1:
                 st.caption("Source")
                 freqs = compute_frequencies(state['source_text'], sw)
