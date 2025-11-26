@@ -383,8 +383,8 @@ class BERTScoreValidatorAgent:
         # Only for same-language
         if not languages_equivalent(state['source_language'], state['target_language']):
              state['current_agent_index'] += 1
-             return state
-             
+            state['current_agent_index'] += 1
+            return state
         current = state['final_translation']
         source = state['source_text']
         
