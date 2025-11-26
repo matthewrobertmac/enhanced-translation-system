@@ -19,12 +19,12 @@ class SemanticTranslationCache:
     Stores exact matches, sentence fragments, and embeddings.
     """
     
-    def __init__(self, cache_dir: str = ".translation_cache"):
+    def __init__(self, cache_dir: str = ".translation_cache", similarity_threshold: float = 0.85):
         self.cache_dir = cache_dir
         self.cache = {}  # Full translation cache
         self.sentence_cache = {}  # Sentence-level cache
         self.embeddings = {}  # Store embeddings for similarity search
-        self.similarity_threshold = 0.85
+        self.similarity_threshold = similarity_threshold
         self.embedding_model = None
         self.stats = {
             'hits': 0,
