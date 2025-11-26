@@ -39,7 +39,6 @@ class AlternativeTranslationGenerator:
         try:
             # Clone LLM with specific temperature (simplified approach)
             # Note: In a strict type system, we might need a factory, but this works for LangChain objects
-            variant_llm = self.llm
             # Ideally, we should use the factory from src.core.llm to create a new instance,
             # but simply overriding params in invoke or passing config is complex.
             # For simplicity in this refactor, we rely on the LLM's default or pass params if supported.
