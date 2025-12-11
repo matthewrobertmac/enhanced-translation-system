@@ -29,9 +29,9 @@ A sophisticated translation system with cultural adaptation, literary editing, c
 - 🎯 Entity tracking and network visualization
 - 🔊 **TTS AUDIO PLAYBACK** - Listen to translated text aloud via ElevenLabs
 
-## Installation
+## Getting Started
 
-To get started, follow these steps:
+### Setup Guide:
 
 ```bash
 # 1. Clone the repository
@@ -49,6 +49,28 @@ pip install -r requirements.txt
 # 4. Run Streamlit App
 streamlit run app.py
 ```
+
+### Sidebar (Streamlit UI Component)
+When the application is launched using `streamlit run app.py`, Streamlit renders a left-hand **sidebar**.  
+This sidebar acts as an interactive control panel where users can configure the translation system before running the pipeline.  
+All controls are implemented using Streamlit’s built-in `st.sidebar` interface.
+
+### Sidebar Configuration Steps
+
+1. **Select provider:**
+   - `openai`
+   - `anthropic`
+
+2. **Paste your API key**
+
+3. **Choose a model:**
+   - **OpenAI:** `gpt-4o`, `gpt-4-turbo`, `gpt-3.5-turbo`
+   - **Anthropic:** `claude-3-5-sonnet-20241022`, `claude-3-opus-20240229`
+
+4. **Adjust temperature as needed**
+
+The sidebar dynamically updates based on user selections, allowing for flexible experimentation across different model providers and configurations.
+
 
 ## System Architecture
 
